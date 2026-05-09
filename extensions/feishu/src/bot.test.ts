@@ -2604,7 +2604,6 @@ describe("handleFeishuMessage command authorization", () => {
       undefined,
     );
   });
-
   it("includes message_id in BodyForAgent on its own line", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
 
