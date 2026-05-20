@@ -1068,9 +1068,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     );
     const reasoningUpdate = updateCalls.find((c) => c.includes("Thinking"));
     expect(reasoningUpdate).toContain("> 💭 **Thinking**");
-    // formatReasoningPrefix strips "Reasoning:" prefix and italic markers
+    // formatReasoningPrefix strips SDK labels and italic markers
     expect(reasoningUpdate).toContain("> thinking step");
     expect(reasoningUpdate).not.toContain("Reasoning:");
+    expect(reasoningUpdate).not.toContain("> Thinking");
     expect(reasoningUpdate).not.toMatch(/> _.*_/);
 
     const combinedUpdate = updateCalls.find((c) => c.includes("Thinking") && c.includes("---"));

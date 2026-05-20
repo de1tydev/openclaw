@@ -250,7 +250,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     if (!thinking) {
       return "";
     }
-    const withoutLabel = thinking.replace(/^Reasoning:\n/, "");
+    const withoutLabel = thinking.replace(/^(?:Reasoning:\n|Thinking\n\n)/, "");
     const plain = withoutLabel.replace(/^_(.*)_$/gm, "$1");
     const lines = plain.split("\n").map((line) => `> ${line}`);
     return `> 💭 **Thinking**\n${lines.join("\n")}`;
