@@ -927,7 +927,7 @@ export async function handleFeishuMessage(params: {
       return;
     }
 
-    const mediaPayload = buildAgentMediaPayload(mediaList);
+    let mediaPayload = buildAgentMediaPayload(mediaList);
     const audioTranscript = await resolveFeishuAudioPreflightTranscript({
       cfg: effectiveCfg,
       mediaList,
@@ -1018,6 +1018,30 @@ export async function handleFeishuMessage(params: {
           log(
             `feishu[${account.accountId}]: fetched quoted message: ${quotedContent?.slice(0, 100)}`,
           );
+          if (
+            quotedMessageInfo.rawContent &&
+            quotedMessageInfo.contentType &&
+            ["image", "file", "audio", "video", "media", "sticker", "post"].includes(
+              quotedMessageInfo.contentType,
+            )
+          ) {
+            const quotedMediaList = await resolveFeishuMediaList({
+              cfg,
+              messageId: ctx.parentId,
+              messageType: quotedMessageInfo.contentType,
+              content: quotedMessageInfo.rawContent,
+              maxBytes: mediaMaxBytes,
+              log,
+              accountId: account.accountId,
+            });
+            if (quotedMediaList.length > 0) {
+              mediaList.push(...quotedMediaList);
+              mediaPayload = buildAgentMediaPayload(mediaList);
+              log(
+                `feishu[${account.accountId}]: attached ${quotedMediaList.length} quoted media item(s) to agent context`,
+              );
+            }
+          }
         } else if (quotedMessageInfo) {
           log(
             `feishu[${account.accountId}]: skipped quoted message from sender ${quotedMessageInfo.senderId ?? "unknown"} (mode=${contextVisibilityMode})`,
@@ -1338,6 +1362,7 @@ export async function handleFeishuMessage(params: {
       : isGroup
         ? normalGroupReplyTargetMessageId
         : (ctx.replyTargetMessageId ?? (ctx.suppressReplyTarget ? undefined : ctx.messageId));
+    const skipReplyToInMessages = !isGroup;
     const threadReply =
       isGroup && shouldReplyInFeishuThread ? (groupSession?.threadReply ?? false) : false;
     const lastRouteThreadId =
@@ -1461,7 +1486,7 @@ export async function handleFeishuMessage(params: {
             chatId: ctx.chatId,
             allowReasoningPreview,
             replyToMessageId: replyTargetMessageId,
-            skipReplyToInMessages: !isGroup,
+            skipReplyToInMessages,
             replyInThread: shouldReplyInFeishuThread ? replyInThread : false,
             rootId: ctx.rootId,
             threadReply,
@@ -1626,7 +1651,7 @@ export async function handleFeishuMessage(params: {
         chatId: ctx.chatId,
         allowReasoningPreview,
         replyToMessageId: replyTargetMessageId,
-        skipReplyToInMessages: !isGroup,
+        skipReplyToInMessages,
         replyInThread: shouldReplyInFeishuThread ? replyInThread : false,
         rootId: ctx.rootId,
         threadReply,
