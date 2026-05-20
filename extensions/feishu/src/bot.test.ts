@@ -1129,6 +1129,45 @@ describe("handleFeishuMessage command authorization", () => {
     expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
   });
 
+  it("marks authorized DM slash commands as text command turns", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(true);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          allowFrom: ["ou-admin"],
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-admin",
+        },
+      },
+      message: {
+        message_id: "msg-dm-command-source",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "/new" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    const context = mockCallArg<{
+      CommandAuthorized?: boolean;
+      CommandSource?: string;
+      CommandBody?: string;
+    }>(mockFinalizeInboundContext, 0, 0);
+    expect(context.CommandAuthorized).toBe(true);
+    expect(context.CommandSource).toBe("text");
+    expect(context.CommandBody).toBe("/new");
+  });
+
   it("reads pairing allow store for non-command DMs when dmPolicy is pairing", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockReadAllowFromStore.mockResolvedValue(["ou-attacker"]);
