@@ -78,12 +78,28 @@ function resolveThinkingPolicyContext(params: {
   };
 }
 
-function catalogSupportsXHigh(compat: ThinkingCatalogEntry["compat"]): boolean {
+function catalogSupportedThinkingLevels(compat: ThinkingCatalogEntry["compat"]): ThinkLevel[] {
   const efforts = compat?.supportedReasoningEfforts;
   if (!Array.isArray(efforts)) {
-    return false;
+    return [];
   }
-  return efforts.some((effort) => normalizeThinkLevel(effort) === "xhigh");
+  const levels: ThinkLevel[] = [];
+  for (const effort of efforts) {
+    const normalized = normalizeThinkLevel(effort);
+    if (normalized && !levels.includes(normalized)) {
+      levels.push(normalized);
+    }
+  }
+  return levels;
+}
+
+function normalizeDeepSeekV4ThinkingModelId(modelId: string): string {
+  return modelId.trim().toLowerCase().split(":", 1)[0].split("/").pop() ?? "";
+}
+
+function isDeepSeekV4ThinkingModel(modelId: string): boolean {
+  const normalized = normalizeDeepSeekV4ThinkingModelId(modelId);
+  return normalized === "deepseek-v4-pro" || normalized === "deepseek-v4-flash";
 }
 
 function normalizeProfileLevel(
@@ -195,8 +211,14 @@ export function resolveThinkingProfile(params: {
     binaryDecision === true
       ? buildBinaryThinkingProfile(defaultLevel)
       : buildBaseThinkingProfile(defaultLevel);
-  if (binaryDecision !== true && catalogSupportsXHigh(context.compat)) {
-    appendProfileLevel(profile, "xhigh");
+  if (binaryDecision !== true) {
+    for (const level of catalogSupportedThinkingLevels(context.compat)) {
+      appendProfileLevel(profile, level);
+    }
+    if (isDeepSeekV4ThinkingModel(context.modelKey || context.modelId)) {
+      appendProfileLevel(profile, "xhigh");
+      appendProfileLevel(profile, "max");
+    }
   }
   const policyContext = {
     provider: context.normalizedProvider,
