@@ -255,20 +255,20 @@ describe("listThinkingLevels", () => {
     ).toBe("max");
   });
 
-  it("uses catalog compat reasoning efforts to expose xhigh for configured custom models", () => {
+  it("uses catalog compat reasoning efforts to expose configured custom model levels", () => {
     const catalog = [
       {
         provider: "gmn",
         id: "gpt-5.4",
         name: "GPT 5.4 via GMN",
         reasoning: true,
-        compat: { supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] },
+        compat: { supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
       },
     ];
 
     expect(listThinkingLevels("gmn", "gpt-5.4", catalog)).toContain("xhigh");
     expect(formatThinkingLevels("gmn", "gpt-5.4", ", ", catalog)).toBe(
-      "off, minimal, low, medium, high, xhigh",
+      "off, minimal, low, medium, high, xhigh, max",
     );
     expect(
       isThinkingLevelSupported({
@@ -278,6 +278,41 @@ describe("listThinkingLevels", () => {
         catalog,
       }),
     ).toBe(true);
+    expect(
+      isThinkingLevelSupported({
+        provider: "gmn",
+        model: "gpt-5.4",
+        level: "max",
+        catalog,
+      }),
+    ).toBe(true);
+  });
+
+  it("exposes xhigh and max for DeepSeek V4 proxy models without provider hooks", () => {
+    expect(listThinkingLevels("opencode-go", "deepseek-v4-pro")).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(listThinkingLevels("custom-proxy", "deepseek/deepseek-v4-flash:free")).toContain("max");
+    expect(
+      isThinkingLevelSupported({
+        provider: "opencode-go",
+        model: "deepseek-v4-pro",
+        level: "max",
+      }),
+    ).toBe(true);
+    expect(
+      resolveSupportedThinkingLevel({
+        provider: "opencode-go",
+        model: "deepseek-v4-pro",
+        level: "max",
+      }),
+    ).toBe("max");
   });
 
   it("does not let catalog xhigh compat override binary thinking providers", () => {
