@@ -1051,6 +1051,62 @@ describe("embedded attempt session lock lifecycle", () => {
     ]);
   });
 
+  it("does not wait on the active session event queue from a hook running inside it", async () => {
+    const events: string[] = [];
+    const session = {
+      _agentEventQueue: Promise.resolve(),
+      _processAgentEvent: vi.fn(async (event: { type?: string }) => {
+        events.push(`process:${event.type}`);
+        await session.agent.beforeToolCall();
+        events.push("process:end");
+      }),
+      _handleAgentEvent(event: { type?: string }) {
+        events.push(`handle:${event.type}`);
+        session["_agentEventQueue"] = session["_agentEventQueue"].then(() =>
+          session["_processAgentEvent"](event),
+        );
+        session["_agentEventQueue"].catch(() => {});
+      },
+      agent: {
+        beforeToolCall: vi.fn(async () => {
+          events.push("hook");
+        }),
+      },
+    };
+
+    installSessionEventWriteLock({
+      session,
+      withSessionWriteLock: async (run) => {
+        events.push("event-lock");
+        return await run();
+      },
+    });
+    installSessionExternalHookWriteLock({
+      session,
+      withSessionWriteLock: async (run) => {
+        events.push("hook-lock");
+        return await run();
+      },
+    });
+
+    const result = session["_handleAgentEvent"]({
+      type: "tool_call",
+    }) as unknown as Promise<unknown>;
+    const completion = await Promise.race([
+      result.then(() => "done"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 25)),
+    ]);
+
+    expect(completion).toBe("done");
+    expect(events).toEqual([
+      "handle:tool_call",
+      "process:tool_call",
+      "hook-lock",
+      "hook",
+      "process:end",
+    ]);
+  });
+
   it("locks Pi extension hooks that can mutate the session outside agent events", async () => {
     const locked: string[] = [];
     const called: string[] = [];
