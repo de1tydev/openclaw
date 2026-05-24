@@ -608,6 +608,7 @@ export async function sendMessageFeishu(
   const tableMode = resolveMarkdownTableMode({
     cfg,
     channel: "feishu",
+    accountId,
   });
 
   // Build message content (with @mention support)
@@ -700,6 +701,7 @@ export async function editMessageFeishu(params: {
   const tableMode = resolveMarkdownTableMode({
     cfg,
     channel: "feishu",
+    accountId,
   });
   const messageText = convertMarkdownTables(text!, tableMode);
   const payload = buildFeishuPostMessagePayload({ messageText });
@@ -745,6 +747,19 @@ export async function updateCardFeishu(params: {
  * Cards render markdown properly (code blocks, tables, links, etc.)
  * Uses schema 2.0 format for proper markdown rendering.
  */
+function convertFeishuMarkdownTablesForDelivery(
+  cfg: ClawdbotConfig,
+  text: string,
+  accountId?: string,
+): string {
+  const tableMode = resolveMarkdownTableMode({
+    cfg,
+    channel: "feishu",
+    accountId,
+  });
+  return convertMarkdownTables(text, tableMode);
+}
+
 export function buildMarkdownCard(text: string): Record<string, unknown> {
   return {
     schema: "2.0",
@@ -840,6 +855,7 @@ export async function sendStructuredCardFeishu(params: {
   if (mentions && mentions.length > 0) {
     cardText = buildMentionedCardContent(mentions, text);
   }
+  cardText = convertFeishuMarkdownTablesForDelivery(cfg, cardText, accountId);
   const card = buildStructuredCard(cardText, { header, note });
   return sendCardFeishu({
     cfg,
@@ -882,6 +898,7 @@ export async function sendMarkdownCardFeishu(params: {
   if (mentions && mentions.length > 0) {
     cardText = buildMentionedCardContent(mentions, text);
   }
+  cardText = convertFeishuMarkdownTablesForDelivery(cfg, cardText, accountId);
   const card = buildMarkdownCard(cardText);
   return sendCardFeishu({
     cfg,
