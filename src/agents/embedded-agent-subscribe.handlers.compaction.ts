@@ -5,6 +5,7 @@
  */
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { resolveHookMessageProvider } from "../utils/hook-message-provider.js";
 import type { EmbeddedAgentSubscribeContext } from "./embedded-agent-subscribe.handlers.types.js";
 import type { AgentSessionEvent } from "./sessions/index.js";
 import { makeZeroUsageSnapshot } from "./usage.js";
@@ -40,6 +41,15 @@ function normalizeCompactionReason(reason: unknown): CompactionReason {
 
 function compactionLogKind(reason: CompactionReason): string {
   return reason === "manual" ? "manual compaction" : "auto-compaction";
+}
+
+function resolveCompactionHookMessageProvider(
+  ctx: EmbeddedAgentSubscribeContext,
+): string | undefined {
+  return resolveHookMessageProvider({
+    sessionKey: ctx.params.sessionKey,
+    provider: ctx.params.messageChannel ?? ctx.params.messageProvider,
+  });
 }
 
 /** Handles compaction start events from an embedded agent session. */
@@ -81,6 +91,7 @@ export function handleCompactionStart(
         },
         {
           sessionKey: ctx.params.sessionKey,
+          messageProvider: resolveCompactionHookMessageProvider(ctx),
         },
       )
       .catch((err: unknown) => {

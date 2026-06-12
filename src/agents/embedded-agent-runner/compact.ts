@@ -39,6 +39,7 @@ import {
   applySkillEnvOverridesFromSnapshot,
 } from "../../skills/runtime/env-overrides.js";
 import { resolveUserPath } from "../../utils.js";
+import { resolveHookMessageProvider } from "../../utils/hook-message-provider.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { createBundleLspToolRuntime } from "../agent-bundle-lsp-runtime.js";
@@ -96,8 +97,8 @@ import { isFallbackSummaryError, runWithModelFallback } from "../model-fallback.
 import { supportsModelTools } from "../model-tool-support.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
-import { applyPreparedRuntimeAuthToModel } from "../provider-request-config.js";
 import { resolveAgentPromptSurfaceForSessionKey } from "../prompt-surface.js";
+import { applyPreparedRuntimeAuthToModel } from "../provider-request-config.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
 import { collectRuntimeChannelCapabilities } from "../runtime-capabilities.js";
 import { buildAgentRuntimePlan } from "../runtime-plan/build.js";
@@ -762,6 +763,10 @@ async function compactEmbeddedAgentSessionDirectOnce(
 
     const sessionLabel = params.sessionKey ?? params.sessionId;
     const resolvedMessageProvider = params.messageChannel ?? params.messageProvider;
+    const hookMessageProvider = resolveHookMessageProvider({
+      sessionKey: params.sessionKey,
+      provider: resolvedMessageProvider,
+    });
     const contextInjectionMode = resolveContextInjectionMode(params.config, effectiveSkillAgentId);
     const { contextFiles } =
       contextInjectionMode === "never"
@@ -1371,7 +1376,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
             sessionKey: params.sessionKey,
             sessionAgentId,
             workspaceDir: effectiveWorkspace,
-            messageProvider: resolvedMessageProvider,
+            messageProvider: hookMessageProvider,
             metrics: beforeHookMetrics,
             onHookMessages: params.onCompactionHookMessages,
           });
@@ -1551,7 +1556,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
             hookSessionKey,
             missingSessionKey,
             workspaceDir: effectiveWorkspace,
-            messageProvider: resolvedMessageProvider,
+            messageProvider: hookMessageProvider,
             messageCountAfter,
             tokensAfter,
             compactedCount,

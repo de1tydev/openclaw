@@ -21,6 +21,7 @@ import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
+import { resolveHookMessageProvider } from "../../utils/hook-message-provider.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
@@ -346,7 +347,10 @@ export async function compactEmbeddedAgentSession(
           config: params.config,
           agentId: params.agentId,
         });
-        const resolvedMessageProvider = params.messageChannel ?? params.messageProvider;
+        const resolvedMessageProvider = resolveHookMessageProvider({
+          sessionKey: params.sessionKey,
+          provider: params.messageChannel ?? params.messageProvider,
+        });
         const hookCtx = {
           sessionId: params.sessionId,
           agentId: sessionAgentId,
