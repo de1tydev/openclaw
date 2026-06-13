@@ -50,7 +50,7 @@ type DecodedFeishuCardAction =
     };
 
 function isInteractionKind(value: unknown): value is FeishuCardInteractionKind {
-  return value === "button" || value === "quick" || value === "meta";
+  return value === "button" || value === "quick" || value === "meta" || value === "plugin_approval";
 }
 
 function isMetadataValue(value: unknown): value is string | number | boolean | null | undefined {

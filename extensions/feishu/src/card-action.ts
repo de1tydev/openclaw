@@ -451,9 +451,15 @@ export async function handleFeishuCardAction(params: {
         return;
       }
 
-      if (envelope.a === FEISHU_APPROVAL_CONFIRM_ACTION || envelope.k === "quick") {
+      if (
+        envelope.a === FEISHU_APPROVAL_CONFIRM_ACTION ||
+        envelope.k === "quick" ||
+        (envelope.k === "plugin_approval" &&
+          (envelope.a === "feishu.plugin_approval.confirm" ||
+            envelope.a === "feishu.plugin_approval.reject"))
+      ) {
         const command = envelope.q?.trim();
-        if (!command) {
+        if (!command || (envelope.k === "plugin_approval" && !command.startsWith("/approve "))) {
           await sendInvalidInteractionNotice({
             cfg,
             event,

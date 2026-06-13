@@ -36,6 +36,35 @@ describe("feishu card interaction decoder", () => {
     });
   });
 
+  it("decodes plugin approval structured payloads", () => {
+    const result = decodeFeishuCardAction({
+      now: 1_700_000_000_000,
+      event: {
+        operator: { open_id: "u123" },
+        context: { chat_id: "chat1" },
+        action: {
+          value: createFeishuCardInteractionEnvelope({
+            k: "plugin_approval",
+            a: "feishu.plugin_approval.confirm",
+            q: "/approve plugin:test allow-once",
+            c: { h: "chat1", t: "group", e: 1_700_000_060_000 },
+          }),
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      kind: "structured",
+      envelope: {
+        oc: "ocf1",
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test allow-once",
+        c: { h: "chat1", t: "group", e: 1_700_000_060_000 },
+      },
+    });
+  });
+
   it("falls back for legacy text-like payloads", () => {
     const result = decodeFeishuCardAction({
       event: {

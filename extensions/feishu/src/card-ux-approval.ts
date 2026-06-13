@@ -1,25 +1,27 @@
-// Feishu plugin module implements card ux approval behavior.
 import type {
-  OpenClawConfig,
+  ExecApprovalDecision,
   PluginApprovalRequest,
   PluginApprovalResolved,
-  ReplyPayload,
 } from "openclaw/plugin-sdk/approval-runtime";
 import {
   buildPluginApprovalPendingReplyPayload,
   buildPluginApprovalResolvedReplyPayload,
 } from "openclaw/plugin-sdk/approval-runtime";
+// Feishu plugin module implements card ux approval behavior.
+import type { OpenClawConfig, ReplyPayload } from "../runtime-api.js";
 
 const DEFAULT_PLUGIN_DECISIONS = ["allow-once", "allow-always", "deny"] as const;
 
 function resolveAllowedDecisions(
   allowedDecisions?: readonly string[] | null,
-): readonly string[] {
-  if (!allowedDecisions?.length) { return DEFAULT_PLUGIN_DECISIONS; }
-  const seen = new Set<string>();
- const result: string[] = [];
+): readonly ExecApprovalDecision[] {
+  if (!allowedDecisions?.length) {
+    return DEFAULT_PLUGIN_DECISIONS;
+  }
+  const seen = new Set<ExecApprovalDecision>();
+  const result: ExecApprovalDecision[] = [];
   for (const d of allowedDecisions) {
-    if (!seen.has(d) && (d === "allow-once" || d === "allow-always" || d === "deny")) {
+    if ((d === "allow-once" || d === "allow-always" || d === "deny") && !seen.has(d)) {
       seen.add(d);
       result.push(d);
     }
@@ -133,7 +135,7 @@ export function createPluginApprovalCard(params: {
   mdLines.push(`**${title}**`);
   mdLines.push(description);
   if (toolName) {
-    mdLines.push('Tool: `' + toolName + '`')
+    mdLines.push("Tool: `" + toolName + "`");
   }
   if (pluginId) {
     mdLines.push(`Plugin: ${pluginId}`);
@@ -141,7 +143,7 @@ export function createPluginApprovalCard(params: {
   if (agentId) {
     mdLines.push(`Agent: ${agentId}`);
   }
-  mdLines.push('ID: `' + approvalId + '`')
+  mdLines.push("ID: `" + approvalId + "`");
   mdLines.push(`Expires in: ${expiresIn}s`);
 
   const context = buildFeishuCardInteractionContext({
@@ -168,8 +170,7 @@ export function createPluginApprovalCard(params: {
         }),
       );
     } else {
-      const label =
-        decision === "allow-always" ? "\u2705 Approve always" : "\u2705 Approve";
+      const label = decision === "allow-always" ? "\u2705 Approve always" : "\u2705 Approve";
       actions.push(
         buildFeishuCardButton({
           label,

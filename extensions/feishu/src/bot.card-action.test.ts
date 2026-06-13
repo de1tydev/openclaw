@@ -227,6 +227,43 @@ describe("Feishu Card Action Handler", () => {
     expect(message.content).toBe('{"text":"/help"}');
   });
 
+  it("routes plugin approval command actions through the synthetic command path", async () => {
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test-123 allow-once",
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    const message = handleMessage();
+    expect(message.chat_id).toBe("chat1");
+    expect(message.content).toBe('{"text":"/approve plugin:test-123 allow-once"}');
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects plugin approval actions that do not dispatch /approve", async () => {
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval-bad-command",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/help",
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    expect(handleFeishuMessage).not.toHaveBeenCalled();
+    const notice = sendMessageCall();
+    expect(notice.text).toContain("payload is invalid");
+  });
+
   it("opens an approval card for metadata actions", async () => {
     const event: FeishuCardActionEvent = {
       operator: { open_id: "u123", user_id: "uid1", union_id: "un1" },
