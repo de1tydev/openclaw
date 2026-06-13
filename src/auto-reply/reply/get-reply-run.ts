@@ -871,6 +871,9 @@ export async function runPreparedReply(
       modelState.resolveDefaultThinkingLevel(),
     );
   }
+  const explicitThinkLevel =
+    normalizeThinkLevel(opts?.thinkingLevelOverride) !== undefined ||
+    (directives.hasThinkDirective && directives.thinkLevel !== undefined);
   const allowedThinkingCatalog = modelState.allowedModelCatalog ?? [];
   let thinkingCatalog = allowedThinkingCatalog.length > 0 ? allowedThinkingCatalog : undefined;
   let thinkingLevelSupported = isThinkingLevelSupported({
@@ -899,8 +902,7 @@ export async function runPreparedReply(
     });
   }
   if (!thinkingLevelSupported) {
-    const explicitThink = directives.hasThinkDirective && directives.thinkLevel !== undefined;
-    if (explicitThink) {
+    if (explicitThinkLevel) {
       typing.cleanup();
       return {
         text: `Thinking level "${resolvedThinkLevel}" is not supported for ${provider}/${model}. Use one of: ${formatThinkingLevels(provider, model, ", ", thinkingCatalog)}.`,
@@ -1307,6 +1309,7 @@ export async function runPreparedReply(
       authProfileId,
       authProfileIdSource,
       thinkLevel: resolvedThinkLevel,
+      thinkLevelSource: explicitThinkLevel ? ("explicit" as const) : ("implicit" as const),
       fastMode: useFastReplyRuntime
         ? false
         : resolveFastModeState({

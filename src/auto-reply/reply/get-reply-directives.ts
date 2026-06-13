@@ -81,6 +81,21 @@ function canUseFastExplicitModelDirective(params: {
   );
 }
 
+function preserveExplicitThinkDirective(
+  source: InlineDirectives,
+  target: InlineDirectives,
+): InlineDirectives {
+  if (!source.hasThinkDirective || !source.thinkLevel) {
+    return target;
+  }
+  return {
+    ...target,
+    hasThinkDirective: true,
+    thinkLevel: source.thinkLevel,
+    rawThinkLevel: source.rawThinkLevel,
+  };
+}
+
 function resolveDirectiveCommandText(params: { ctx: MsgContext; sessionCtx: TemplateContext }) {
   const commandSource =
     params.sessionCtx.BodyForCommands ??
@@ -325,12 +340,16 @@ export async function resolveReplyDirectives(params: {
       if (directiveOnlyCheck.cleaned.trim().length > 0) {
         const allowInlineStatus =
           parsedDirectives.hasStatusDirective && allowTextCommands && command.isAuthorizedSender;
+        const clearedDirectives = preserveExplicitThinkDirective(
+          parsedDirectives,
+          clearInlineDirectives(parsedDirectives.cleaned),
+        );
         parsedDirectives = allowInlineStatus
           ? {
-              ...clearInlineDirectives(parsedDirectives.cleaned),
+              ...clearedDirectives,
               hasStatusDirective: true,
             }
-          : clearInlineDirectives(parsedDirectives.cleaned);
+          : clearedDirectives;
       }
     }
   }

@@ -88,6 +88,34 @@ function parseInlineDirectivesForTest(body: string) {
       execSecurity: undefined,
     };
   }
+  if (normalized === "please /think high now") {
+    return {
+      cleaned: "please now",
+      hasThinkDirective: true,
+      thinkLevel: "high",
+      rawThinkLevel: "high",
+      clearThinkLevel: false,
+      hasVerboseDirective: false,
+      hasTraceDirective: false,
+      traceLevel: undefined,
+      rawTraceLevel: undefined,
+      hasFastDirective: false,
+      hasReasoningDirective: false,
+      hasElevatedDirective: false,
+      hasExecDirective: false,
+      hasModelDirective: false,
+      hasQueueDirective: false,
+      hasStatusDirective: false,
+      queueReset: false,
+      verboseLevel: undefined,
+      fastMode: undefined,
+      reasoningLevel: undefined,
+      elevatedLevel: undefined,
+      rawElevatedLevel: undefined,
+      rawModelDirective: undefined,
+      execSecurity: undefined,
+    };
+  }
   return {
     cleaned: body,
     hasThinkDirective: false,
@@ -457,6 +485,57 @@ describe("resolveReplyDirectives", () => {
       reply: {
         text: "⚙️ Trace enabled. Warning: trace output may contain sensitive information.",
       },
+    });
+  });
+
+  it("preserves mixed inline explicit think directives for execution", async () => {
+    const result = await resolveReplyDirectives({
+      ctx: buildTestCtx({
+        Body: "please /think high now",
+        CommandBody: "please /think high now",
+        CommandAuthorized: true,
+      }),
+      cfg: {},
+      agentId: "main",
+      agentDir: "/tmp/main-agent",
+      workspaceDir: "/tmp",
+      agentCfg: {},
+      sessionCtx: {
+        Body: "please /think high now",
+        BodyStripped: "please /think high now",
+        BodyForAgent: "please /think high now",
+        CommandBody: "please /think high now",
+        Provider: "telegram",
+        Surface: "telegram",
+      } as TemplateContext,
+      sessionEntry: makeSessionEntry(),
+      sessionStore: {
+        "agent:main:telegram:+2000": makeSessionEntry(),
+      },
+      sessionKey: "agent:main:telegram:+2000",
+      storePath: "/tmp/sessions.json",
+      sessionScope: "per-sender",
+      groupResolution: undefined,
+      isGroup: false,
+      triggerBodyNormalized: "please /think high now",
+      resetTriggered: false,
+      commandAuthorized: true,
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o-mini",
+      aliasIndex: { byAlias: new Map(), byKey: new Map() },
+      provider: "openai",
+      model: "gpt-4o-mini",
+      hasResolvedHeartbeatModelOverride: false,
+      typing: makeTypingController(),
+      opts: undefined,
+      skillFilter: undefined,
+    });
+
+    const applyInput = mockCallInput(mocks.applyInlineDirectiveOverrides);
+    expect((applyInput.directives as { hasThinkDirective?: boolean }).hasThinkDirective).toBe(true);
+    expect((applyInput.directives as { thinkLevel?: string }).thinkLevel).toBe("high");
+    expectContinueResult(result, {
+      resolvedThinkLevel: "high",
     });
   });
 

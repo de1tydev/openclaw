@@ -177,13 +177,19 @@ vi.mock("./agent-runner-utils.js", () => ({
   buildEmbeddedRunExecutionParams: (params: {
     provider: string;
     model: string;
-    run: { provider?: string; authProfileId?: string; authProfileIdSource?: "auto" | "user" };
+    run: {
+      provider?: string;
+      authProfileId?: string;
+      authProfileIdSource?: "auto" | "user";
+      thinkLevel?: string;
+    };
   }) => ({
     embeddedContext: {},
     senderContext: {},
     runBaseParams: {
       provider: params.provider,
       model: params.model,
+      thinkLevel: params.run.thinkLevel,
       authProfileId: params.provider === params.run.provider ? params.run.authProfileId : undefined,
       authProfileIdSource:
         params.provider === params.run.provider ? params.run.authProfileIdSource : undefined,
@@ -1209,6 +1215,76 @@ describe("runAgentTurnWithFallback", () => {
     expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "embedded run params", {
       toolsAllow: ["message"],
     });
+  });
+
+  it("clamps implicit thinking levels for model fallback candidates without persisting", async () => {
+    const followupRun = createFollowupRun();
+    followupRun.run.thinkLevel = "high";
+    followupRun.run.thinkLevelSource = "implicit";
+    followupRun.run.config = {
+      models: {
+        providers: {
+          fixture: {
+            baseUrl: "https://fixture.test",
+            models: [makeTestModel("no-thinking", 200_000)],
+          },
+        },
+      },
+    };
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("fixture", "no-thinking"),
+      provider: "fixture",
+      model: "no-thinking",
+      attempts: [{ provider: "anthropic", model: "claude", error: "rate limit" }],
+    }));
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "fallback" }],
+      meta: {},
+    });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    await runAgentTurnWithFallback(createMinimalRunAgentTurnParams({ followupRun }));
+
+    expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "fallback run params", {
+      provider: "fixture",
+      model: "no-thinking",
+      thinkLevel: "off",
+    });
+    expect(followupRun.run.thinkLevel).toBe("high");
+  });
+
+  it("surfaces explicit unsupported thinking for model fallback candidates", async () => {
+    const followupRun = createFollowupRun();
+    followupRun.run.thinkLevel = "high";
+    followupRun.run.thinkLevelSource = "explicit";
+    followupRun.run.config = {
+      models: {
+        providers: {
+          fixture: {
+            baseUrl: "https://fixture.test",
+            models: [makeTestModel("no-thinking", 200_000)],
+          },
+        },
+      },
+    };
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("fixture", "no-thinking"),
+      provider: "fixture",
+      model: "no-thinking",
+      attempts: [{ provider: "anthropic", model: "claude", error: "rate limit" }],
+    }));
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const result = await runAgentTurnWithFallback(createMinimalRunAgentTurnParams({ followupRun }));
+
+    expect(result.kind).toBe("final");
+    if (result.kind !== "final") {
+      throw new Error(`expected final result, got ${result.kind}`);
+    }
+    expect(result.payload.text).toContain(
+      'Thinking level "high" is not supported for fixture/no-thinking. Use one of: off.',
+    );
+    expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
 
   it("rechecks queued auto fallback primary probes before running", async () => {

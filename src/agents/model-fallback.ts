@@ -332,6 +332,9 @@ async function runFallbackCandidate<T>(params: {
     if (isCommandLaneTaskTimeoutError(err)) {
       throw err;
     }
+    if (err instanceof Error && err.name === "UnsupportedCandidateThinkingLevelError") {
+      throw err;
+    }
     if (isNonProviderRuntimeCoordinationError(err)) {
       throw err;
     }

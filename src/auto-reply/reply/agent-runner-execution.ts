@@ -49,7 +49,10 @@ import { isMissingProviderAuthError } from "../../agents/model-auth.js";
 import { runWithModelFallback, isFallbackSummaryError } from "../../agents/model-fallback.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import {
+  buildConfiguredModelCatalog,
   isCliProvider,
+  modelKey,
+  normalizeProviderId,
   resolveModelRefFromString,
   resolvePersistedOverrideModelRef,
 } from "../../agents/model-selection.js";
@@ -80,7 +83,14 @@ import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
-import type { VerboseLevel } from "../thinking.js";
+import {
+  formatThinkingLevels,
+  isThinkingLevelSupported,
+  resolveSupportedThinkingLevel,
+  type ThinkingCatalogEntry,
+  type ThinkLevel,
+  type VerboseLevel,
+} from "../thinking.js";
 import {
   HEARTBEAT_TOKEN,
   isSilentReplyPrefixText,
@@ -608,6 +618,72 @@ function extractCodexUsageLimitMessage(text: string): string | undefined {
     return undefined;
   }
   return message.length > 500 ? `${message.slice(0, 497)}...` : message;
+}
+
+function findCandidateThinkingCatalogEntry(params: {
+  catalog?: readonly ThinkingCatalogEntry[];
+  provider: string;
+  model: string;
+}): ThinkingCatalogEntry | undefined {
+  const normalizedProvider = normalizeProviderId(params.provider);
+  const selectedKey = modelKey(normalizedProvider, params.model);
+  return params.catalog?.find((entry) => modelKey(normalizeProviderId(entry.provider), entry.id) === selectedKey);
+}
+
+function hasCandidateThinkingMetadata(entry: ThinkingCatalogEntry | undefined): boolean {
+  return Boolean(
+    entry &&
+      (entry.reasoning !== undefined || entry.params !== undefined || entry.compat !== undefined),
+  );
+}
+
+class UnsupportedCandidateThinkingLevelError extends Error {
+  readonly userMessage: string;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedCandidateThinkingLevelError";
+    this.userMessage = message;
+  }
+}
+
+function isUnsupportedCandidateThinkingLevelError(
+  error: unknown,
+): error is UnsupportedCandidateThinkingLevelError {
+  return error instanceof UnsupportedCandidateThinkingLevelError;
+}
+
+function resolveCandidateThinkLevel(params: {
+  provider: string;
+  model: string;
+  level: ThinkLevel | undefined;
+  source: FollowupRun["run"]["thinkLevelSource"];
+  catalog: ThinkingCatalogEntry[] | undefined;
+}): ThinkLevel | undefined {
+  if (!params.level) {
+    return undefined;
+  }
+  if (
+    isThinkingLevelSupported({
+      provider: params.provider,
+      model: params.model,
+      level: params.level,
+      catalog: params.catalog,
+    })
+  ) {
+    return params.level;
+  }
+  if (params.source === "explicit") {
+    throw new UnsupportedCandidateThinkingLevelError(
+      `Thinking level "${params.level}" is not supported for ${params.provider}/${params.model}. Use one of: ${formatThinkingLevels(params.provider, params.model, ", ", params.catalog)}.`,
+    );
+  }
+  return resolveSupportedThinkingLevel({
+    provider: params.provider,
+    model: params.model,
+    level: params.level,
+    catalog: params.catalog,
+  });
 }
 
 function isPureTransientRateLimitSummary(err: unknown): boolean {
@@ -1526,6 +1602,65 @@ export async function runAgentTurnWithFallback(params: {
           ...runnableRun,
           config: runtimeConfig,
         };
+  const configuredCandidateThinkingCatalog = buildConfiguredModelCatalog({
+    cfg: runtimeConfig,
+  }) as ThinkingCatalogEntry[];
+  let manifestCandidateThinkingCatalog: ThinkingCatalogEntry[] | null = null;
+  let runtimeCandidateThinkingCatalog: ThinkingCatalogEntry[] | null = null;
+  const loadManifestCandidateThinkingCatalog = async () => {
+    if (manifestCandidateThinkingCatalog) {
+      return manifestCandidateThinkingCatalog;
+    }
+    const { loadManifestModelCatalog } = await import("../../agents/model-catalog.runtime.js");
+    manifestCandidateThinkingCatalog = loadManifestModelCatalog({
+      config: runtimeConfig,
+      fallbackToMetadataScan: false,
+    }) as ThinkingCatalogEntry[];
+    return manifestCandidateThinkingCatalog;
+  };
+  const loadRuntimeCandidateThinkingCatalog = async () => {
+    if (runtimeCandidateThinkingCatalog) {
+      return runtimeCandidateThinkingCatalog;
+    }
+    const { loadModelCatalog } = await import("../../agents/model-catalog.runtime.js");
+    runtimeCandidateThinkingCatalog = (await loadModelCatalog({
+      config: runtimeConfig,
+    })) as ThinkingCatalogEntry[];
+    return runtimeCandidateThinkingCatalog;
+  };
+  const resolveCandidateThinkingCatalog = async (provider: string, model: string) => {
+    const configuredEntry = findCandidateThinkingCatalogEntry({
+      catalog: configuredCandidateThinkingCatalog,
+      provider,
+      model,
+    });
+    if (hasCandidateThinkingMetadata(configuredEntry)) {
+      return configuredCandidateThinkingCatalog;
+    }
+    const manifestCatalog = await loadManifestCandidateThinkingCatalog();
+    const manifestEntry = findCandidateThinkingCatalogEntry({
+      catalog: manifestCatalog,
+      provider,
+      model,
+    });
+    if (hasCandidateThinkingMetadata(manifestEntry)) {
+      return manifestCatalog;
+    }
+    const runtimeCatalog = await loadRuntimeCandidateThinkingCatalog();
+    const runtimeEntry = findCandidateThinkingCatalogEntry({
+      catalog: runtimeCatalog,
+      provider,
+      model,
+    });
+    if (runtimeEntry || runtimeCatalog.length > 0) {
+      return runtimeCatalog;
+    }
+    return configuredCandidateThinkingCatalog.length > 0
+      ? configuredCandidateThinkingCatalog
+      : manifestCatalog.length > 0
+        ? manifestCatalog
+        : undefined;
+  };
   const preserveUserFacingSessionState = shouldPreserveUserFacingSessionStateForInputProvenance(
     effectiveRun.inputProvenance,
   );
@@ -1552,6 +1687,31 @@ export async function runAgentTurnWithFallback(params: {
       return candidateRun;
     }
     return effectiveRun;
+  };
+  const resolveRunWithCandidateThinking = async (
+    candidateRun: FollowupRun["run"],
+    provider: string,
+    model: string,
+  ): Promise<FollowupRun["run"]> => {
+    if (!candidateRun.thinkLevel || candidateRun.thinkLevel === "off") {
+      return candidateRun;
+    }
+    const originalKey = modelKey(normalizeProviderId(effectiveRun.provider), effectiveRun.model);
+    const candidateKey = modelKey(normalizeProviderId(provider), model);
+    if (candidateKey === originalKey) {
+      return candidateRun;
+    }
+    const candidateThinkingCatalog = await resolveCandidateThinkingCatalog(provider, model);
+    const candidateThinkLevel = resolveCandidateThinkLevel({
+      provider,
+      model,
+      level: candidateRun.thinkLevel,
+      source: candidateRun.thinkLevelSource,
+      catalog: candidateThinkingCatalog,
+    });
+    return candidateThinkLevel === candidateRun.thinkLevel
+      ? candidateRun
+      : { ...candidateRun, thinkLevel: candidateThinkLevel };
   };
   const applyLiveModelSwitchToRun = (
     run: FollowupRun["run"],
@@ -2022,6 +2182,7 @@ export async function runAgentTurnWithFallback(params: {
             const suppressAssistantErrorPersistenceForCandidate =
               assistantErrorPersistedAcrossFallback;
             const candidateRun = resolveRunForFallbackCandidate(provider, model);
+            const executionRun = await resolveRunWithCandidateThinking(candidateRun, provider, model);
             const activeProbe = effectiveRun.autoFallbackPrimaryProbe;
             if (activeProbe && provider === activeProbe.provider && model === activeProbe.model) {
               markAutoFallbackPrimaryProbe({
@@ -2034,7 +2195,7 @@ export async function runAgentTurnWithFallback(params: {
             params.opts?.onModelSelected?.({
               provider,
               model,
-              thinkLevel: params.followupRun.run.thinkLevel,
+              thinkLevel: executionRun.thinkLevel,
             });
             let rollbackFallbackCandidateSelection: (() => Promise<void>) | undefined;
             try {
@@ -2199,7 +2360,7 @@ export async function runAgentTurnWithFallback(params: {
                     inputProvenance: params.followupRun.run.inputProvenance,
                     provider: cliExecutionProvider,
                     model,
-                    thinkLevel: params.followupRun.run.thinkLevel,
+                    thinkLevel: executionRun.thinkLevel,
                     timeoutMs: params.followupRun.run.timeoutMs,
                     runTimeoutOverrideMs: params.followupRun.run.runTimeoutOverrideMs,
                     runId,
@@ -2258,7 +2419,7 @@ export async function runAgentTurnWithFallback(params: {
             }
             const { embeddedContext, senderContext, runBaseParams } =
               buildEmbeddedRunExecutionParams({
-                run: candidateRun,
+                run: executionRun,
                 sessionCtx: params.sessionCtx,
                 hasRepliedRef: params.opts?.hasRepliedRef,
                 provider,
@@ -2750,6 +2911,15 @@ export async function runAgentTurnWithFallback(params: {
 
       break;
     } catch (err) {
+      if (isUnsupportedCandidateThinkingLevelError(err)) {
+        params.replyOperation?.fail("run_failed", err);
+        return {
+          kind: "final",
+          payload: markAgentRunFailureReplyPayload({
+            text: err.userMessage,
+          }),
+        };
+      }
       if (err instanceof LiveSessionModelSwitchError) {
         liveModelSwitchRetries += 1;
         if (liveModelSwitchRetries > MAX_LIVE_SWITCH_RETRIES) {

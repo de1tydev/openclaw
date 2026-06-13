@@ -840,6 +840,34 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed for unsupported explicit thinking errors", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.5",
+            fallbacks: ["anthropic/claude-sonnet-4-6"],
+          },
+        },
+      },
+    });
+    const unsupportedThinkingError = new Error(
+      'Thinking level "high" is not supported for fixture/no-thinking. Use one of: off.',
+    );
+    unsupportedThinkingError.name = "UnsupportedCandidateThinkingLevelError";
+    const run = vi.fn().mockRejectedValueOnce(unsupportedThinkingError).mockResolvedValueOnce("wrong fallback");
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.5",
+        run,
+      }),
+    ).rejects.toThrow('Thinking level "high" is not supported');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed before auth cooldown skips when a strict plugin harness is missing", async () => {
     const cfg = makeCfg({
       models: {

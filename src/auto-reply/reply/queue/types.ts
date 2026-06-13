@@ -116,6 +116,8 @@ export type FollowupRun = {
     authProfileId?: string;
     authProfileIdSource?: "auto" | "user";
     thinkLevel?: ThinkLevel;
+    /** Turn-local origin for execution thinking; used to keep explicit /think fail-fast. */
+    thinkLevelSource?: "explicit" | "implicit";
     verboseLevel?: VerboseLevel;
     reasoningLevel?: ReasoningLevel;
     elevatedLevel?: ElevatedLevel;
