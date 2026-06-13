@@ -3,7 +3,7 @@ import { isRecord } from "./comment-shared.js";
 
 export const FEISHU_CARD_INTERACTION_VERSION = "ocf1";
 
-type FeishuCardInteractionKind = "button" | "quick" | "meta";
+type FeishuCardInteractionKind = "button" | "quick" | "meta" | "plugin_approval";
 type FeishuCardInteractionReason = "malformed" | "stale" | "wrong_user" | "wrong_conversation";
 
 type FeishuCardInteractionMetadata = Record<string, string | number | boolean | null | undefined>;

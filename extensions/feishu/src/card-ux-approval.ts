@@ -1,4 +1,31 @@
 // Feishu plugin module implements card ux approval behavior.
+import type {
+  OpenClawConfig,
+  PluginApprovalRequest,
+  PluginApprovalResolved,
+  ReplyPayload,
+} from "openclaw/plugin-sdk/approval-runtime";
+import {
+  buildPluginApprovalPendingReplyPayload,
+  buildPluginApprovalResolvedReplyPayload,
+} from "openclaw/plugin-sdk/approval-runtime";
+
+const DEFAULT_PLUGIN_DECISIONS = ["allow-once", "allow-always", "deny"] as const;
+
+function resolveAllowedDecisions(
+  allowedDecisions?: readonly string[] | null,
+): readonly string[] {
+  if (!allowedDecisions?.length) { return DEFAULT_PLUGIN_DECISIONS; }
+  const seen = new Set<string>();
+ const result: string[] = [];
+  for (const d of allowedDecisions) {
+    if (!seen.has(d) && (d === "allow-once" || d === "allow-always" || d === "deny")) {
+      seen.add(d);
+      result.push(d);
+    }
+  }
+  return result.length > 0 ? result : DEFAULT_PLUGIN_DECISIONS;
+}
 import { createFeishuCardInteractionEnvelope } from "./card-interaction.js";
 import { buildFeishuCardButton, buildFeishuCardInteractionContext } from "./card-ux-shared.js";
 
@@ -64,3 +91,170 @@ export function createApprovalCard(params: {
     },
   };
 }
+
+const FEISHU_PLUGIN_APPROVAL_CONFIRM_ACTION = "feishu.plugin_approval.confirm";
+const FEISHU_PLUGIN_APPROVAL_REJECT_ACTION = "feishu.plugin_approval.reject";
+
+export function createPluginApprovalCard(params: {
+  approvalId: string;
+  title: string;
+  description: string;
+  toolName?: string | null;
+  pluginId?: string | null;
+  agentId?: string | null;
+  expiresAtMs: number;
+  nowMs: number;
+  allowedDecisions: readonly string[];
+  sessionKey?: string | null;
+  chatId?: string;
+  chatType?: "p2p" | "group";
+}): Record<string, unknown> {
+  const {
+    approvalId,
+    title,
+    description,
+    toolName,
+    pluginId,
+    agentId,
+    expiresAtMs,
+    nowMs,
+    allowedDecisions,
+    sessionKey,
+    chatId,
+    chatType,
+  } = params;
+
+  const icon = "\u{1F6E1}\u{FE0F}";
+  const expiresIn = Math.max(0, Math.round((expiresAtMs - nowMs) / 1000));
+
+  const mdLines: string[] = [];
+  mdLines.push(`**${icon} Plugin approval required**`);
+  mdLines.push("");
+  mdLines.push(`**${title}**`);
+  mdLines.push(description);
+  if (toolName) {
+    mdLines.push('Tool: `' + toolName + '`')
+  }
+  if (pluginId) {
+    mdLines.push(`Plugin: ${pluginId}`);
+  }
+  if (agentId) {
+    mdLines.push(`Agent: ${agentId}`);
+  }
+  mdLines.push('ID: `' + approvalId + '`')
+  mdLines.push(`Expires in: ${expiresIn}s`);
+
+  const context = buildFeishuCardInteractionContext({
+    operatorOpenId: "",
+    chatId,
+    expiresAt: expiresAtMs,
+    chatType,
+    sessionKey: sessionKey ?? undefined,
+  });
+
+  const actions: Array<Record<string, unknown>> = [];
+  for (const decision of allowedDecisions) {
+    if (decision === "deny") {
+      actions.push(
+        buildFeishuCardButton({
+          label: "\u274C Reject",
+          type: "danger",
+          value: createFeishuCardInteractionEnvelope({
+            k: "plugin_approval",
+            a: FEISHU_PLUGIN_APPROVAL_REJECT_ACTION,
+            q: `/approve ${approvalId} deny`,
+            c: context,
+          }),
+        }),
+      );
+    } else {
+      const label =
+        decision === "allow-always" ? "\u2705 Approve always" : "\u2705 Approve";
+      actions.push(
+        buildFeishuCardButton({
+          label,
+          type: "primary",
+          value: createFeishuCardInteractionEnvelope({
+            k: "plugin_approval",
+            a: FEISHU_PLUGIN_APPROVAL_CONFIRM_ACTION,
+            q: `/approve ${approvalId} ${decision}`,
+            c: context,
+          }),
+        }),
+      );
+    }
+  }
+
+  return {
+    schema: "2.0",
+    config: { width_mode: "fill" },
+    header: {
+      title: { tag: "plain_text", content: `${icon} Plugin approval required` },
+      template: "orange",
+    },
+    body: {
+      elements: [
+        { tag: "markdown", content: mdLines.join("\n") },
+        { tag: "action", actions },
+      ],
+    },
+  };
+}
+
+/** Build a Feishu-specific pending plugin approval card as a ReplyPayload. */
+function buildFeishuPluginPendingPayload(params: {
+  cfg: OpenClawConfig;
+  request: PluginApprovalRequest;
+  target: { channel: string; to: string };
+  nowMs: number;
+}): ReplyPayload {
+  const { request, nowMs } = params;
+  const allowedDecisions = resolveAllowedDecisions(request.request.allowedDecisions);
+  const card = createPluginApprovalCard({
+    approvalId: request.id,
+    title: request.request.title,
+    description: request.request.description,
+    toolName: request.request.toolName,
+    pluginId: request.request.pluginId,
+    agentId: request.request.agentId,
+    expiresAtMs: request.expiresAtMs,
+    nowMs,
+    allowedDecisions,
+    sessionKey: request.request.sessionKey,
+  });
+  return buildPluginApprovalPendingReplyPayload({
+    request,
+    nowMs,
+    allowedDecisions,
+    channelData: { feishu: { card } },
+  });
+}
+
+/** Build a Feishu-specific resolved plugin approval text payload. */
+function buildFeishuPluginResolvedPayload(params: {
+  cfg: OpenClawConfig;
+  resolved: PluginApprovalResolved;
+  target: { channel: string; to: string };
+}): ReplyPayload {
+  return buildPluginApprovalResolvedReplyPayload({
+    resolved: params.resolved,
+  });
+}
+
+/** Plugin approval render adapter for the Feishu channel. */
+export const feishuPluginApprovalRender = {
+  buildPendingPayload: buildFeishuPluginPendingPayload,
+  buildResolvedPayload: buildFeishuPluginResolvedPayload,
+} satisfies {
+  buildPendingPayload: (params: {
+    cfg: OpenClawConfig;
+    request: PluginApprovalRequest;
+    target: { channel: string; to: string };
+    nowMs: number;
+  }) => ReplyPayload;
+  buildResolvedPayload: (params: {
+    cfg: OpenClawConfig;
+    resolved: PluginApprovalResolved;
+    target: { channel: string; to: string };
+  }) => ReplyPayload;
+};
