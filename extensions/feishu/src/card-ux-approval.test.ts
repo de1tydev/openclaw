@@ -163,7 +163,7 @@ describe("feishuPluginApprovalRender", () => {
       expiresAtMs: Date.now() + 115_000,
     };
 
-    const payload = feishuPluginApprovalRender.buildPendingPayload!({
+    const payload = feishuPluginApprovalRender.buildPendingPayload({
       cfg: {} as any,
       request,
       target: { channel: "feishu", to: "user:ou_test" },
@@ -191,7 +191,7 @@ describe("feishuPluginApprovalRender", () => {
       ts: Date.now(),
     };
 
-    const payload = feishuPluginApprovalRender.buildResolvedPayload!({
+    const payload = feishuPluginApprovalRender.buildResolvedPayload({
       cfg: {} as any,
       resolved,
       target: { channel: "feishu", to: "user:ou_test" },
