@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const listChannelPluginsMock = vi.hoisted(() =>
   vi.fn(() => [
-    { id: "feishu", messaging: { defaultMarkdownTableMode: "bullets" as const } },
+    { id: "feishu", messaging: { defaultMarkdownTableMode: "off" as const } },
     { id: "mattermost", messaging: { defaultMarkdownTableMode: "off" as const } },
     { id: "signal", messaging: { defaultMarkdownTableMode: "bullets" as const } },
     { id: "whatsapp", messaging: { defaultMarkdownTableMode: "bullets" as const } },
@@ -34,8 +34,8 @@ vi.mock("../plugins/runtime.js", async () => {
 import { DEFAULT_TABLE_MODES, resolveMarkdownTableMode } from "./markdown-tables.js";
 
 describe("DEFAULT_TABLE_MODES", () => {
-  it("feishu mode is bullets", () => {
-    expect(DEFAULT_TABLE_MODES.get("feishu")).toBe("bullets");
+  it("feishu mode is off", () => {
+    expect(DEFAULT_TABLE_MODES.get("feishu")).toBe("off");
   });
 
   it("mattermost mode is off", () => {
@@ -57,7 +57,7 @@ describe("DEFAULT_TABLE_MODES", () => {
 
 describe("resolveMarkdownTableMode", () => {
   it("uses registered channel defaults", () => {
-    expect(resolveMarkdownTableMode({ channel: "feishu" })).toBe("bullets");
+    expect(resolveMarkdownTableMode({ channel: "feishu" })).toBe("off");
   });
 
   it("defaults to code for slack", () => {

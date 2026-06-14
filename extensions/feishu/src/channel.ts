@@ -1231,7 +1231,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
       setup: feishuSetupAdapter,
       setupWizard: feishuSetupWizard,
       messaging: {
-        defaultMarkdownTableMode: "bullets",
+        defaultMarkdownTableMode: "off",
         targetPrefixes: ["feishu", "lark"],
         normalizeTarget: (raw) => normalizeFeishuTarget(raw) ?? undefined,
         resolveDeliveryTarget: ({ conversationId, parentConversationId }) => {
