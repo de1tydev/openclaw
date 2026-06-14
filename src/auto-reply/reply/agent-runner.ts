@@ -271,9 +271,6 @@ function hasImplicitMessageToolSourceReplyDelivery(params: {
   messagingToolSentMediaUrls?: string[];
   messagingToolSentTargets?: unknown[];
 }): boolean {
-  if (params.sourceReplyDeliveryMode !== "message_tool_only") {
-    return false;
-  }
   if (hasCommittedMessagingTargetDeliveryEvidence(params.messagingToolSentTargets)) {
     return false;
   }

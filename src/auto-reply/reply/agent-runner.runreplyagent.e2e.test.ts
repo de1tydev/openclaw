@@ -1651,7 +1651,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(onObservedReplyDelivery).not.toHaveBeenCalled();
   });
 
-  it("does not mark implicit message tool sends as observed delivery outside message_tool_only", async () => {
+  it("marks implicit current-conversation message tool sends as observed delivery in automatic mode", async () => {
     const onObservedReplyDelivery = vi.fn();
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "NO_REPLY" }],
@@ -1672,7 +1672,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
 
     await run();
 
-    expect(onObservedReplyDelivery).not.toHaveBeenCalled();
+    expect(onObservedReplyDelivery).toHaveBeenCalledTimes(1);
   });
 
   it("does not treat whitespace-only messaging evidence as fallback delivery", async () => {
