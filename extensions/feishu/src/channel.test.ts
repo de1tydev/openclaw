@@ -181,6 +181,10 @@ describe("feishuPlugin.pairing.notifyApproval", () => {
 });
 
 describe("feishuPlugin messaging", () => {
+  it("defaults markdown tables to bullet rendering for cards", () => {
+    expect(feishuPlugin.messaging?.defaultMarkdownTableMode).toBe("bullets");
+  });
+
   it("owns sender/topic session inheritance candidates", () => {
     expect(
       feishuPlugin.messaging?.resolveSessionConversation?.({

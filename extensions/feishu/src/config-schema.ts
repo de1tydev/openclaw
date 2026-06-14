@@ -1,5 +1,6 @@
 // Feishu helper module supports config schema behavior.
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import { MarkdownConfigSchema as SharedMarkdownConfigSchema } from "openclaw/plugin-sdk/channel-config-primitives";
 import { z } from "zod";
 export { z };
 import { buildSecretInputSchema, hasConfiguredSecretInput } from "./secret-input.js";
@@ -59,6 +60,7 @@ const MarkdownConfigSchema = z
   .object({
     mode: z.enum(["native", "escape", "strip"]).optional(),
     tableMode: z.enum(["native", "ascii", "simple"]).optional(),
+    ...SharedMarkdownConfigSchema.unwrap().shape,
   })
   .strict()
   .optional();

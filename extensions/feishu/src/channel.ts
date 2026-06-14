@@ -42,8 +42,8 @@ import {
   resolveFeishuRuntimeAccount,
 } from "./accounts.js";
 import { feishuApprovalAuth } from "./approval-auth.js";
-import { feishuPluginApprovalRender } from "./card-ux-approval.js";
 import { FEISHU_CARD_INTERACTION_VERSION } from "./card-interaction.js";
+import { feishuPluginApprovalRender } from "./card-ux-approval.js";
 import type {
   ChannelMessageActionName,
   ChannelMeta,
@@ -1231,6 +1231,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
       setup: feishuSetupAdapter,
       setupWizard: feishuSetupWizard,
       messaging: {
+        defaultMarkdownTableMode: "bullets",
         targetPrefixes: ["feishu", "lark"],
         normalizeTarget: (raw) => normalizeFeishuTarget(raw) ?? undefined,
         resolveDeliveryTarget: ({ conversationId, parentConversationId }) => {

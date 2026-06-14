@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const listChannelPluginsMock = vi.hoisted(() =>
   vi.fn(() => [
+    { id: "feishu", messaging: { defaultMarkdownTableMode: "bullets" as const } },
     { id: "mattermost", messaging: { defaultMarkdownTableMode: "off" as const } },
     { id: "signal", messaging: { defaultMarkdownTableMode: "bullets" as const } },
     { id: "whatsapp", messaging: { defaultMarkdownTableMode: "bullets" as const } },
@@ -17,6 +18,7 @@ vi.mock("../channels/plugins/registry.js", async () => {
   return {
     ...actual,
     listChannelPlugins: () => listChannelPluginsMock(),
+    normalizeChannelId: (raw?: string | null) => raw?.trim().toLowerCase() || null,
   };
 });
 
@@ -32,6 +34,10 @@ vi.mock("../plugins/runtime.js", async () => {
 import { DEFAULT_TABLE_MODES, resolveMarkdownTableMode } from "./markdown-tables.js";
 
 describe("DEFAULT_TABLE_MODES", () => {
+  it("feishu mode is bullets", () => {
+    expect(DEFAULT_TABLE_MODES.get("feishu")).toBe("bullets");
+  });
+
   it("mattermost mode is off", () => {
     expect(DEFAULT_TABLE_MODES.get("mattermost")).toBe("off");
   });
@@ -50,8 +56,30 @@ describe("DEFAULT_TABLE_MODES", () => {
 });
 
 describe("resolveMarkdownTableMode", () => {
+  it("uses registered channel defaults", () => {
+    expect(resolveMarkdownTableMode({ channel: "feishu" })).toBe("bullets");
+  });
+
   it("defaults to code for slack", () => {
     expect(resolveMarkdownTableMode({ channel: "slack" })).toBe("code");
+  });
+
+  it("uses account-level table mode before channel-level mode", () => {
+    const cfg = {
+      channels: {
+        feishu: {
+          markdown: { tables: "code" as const },
+          accounts: {
+            main: {
+              markdown: { tables: "off" as const },
+            },
+          },
+        },
+      },
+    };
+
+    expect(resolveMarkdownTableMode({ cfg, channel: "feishu", accountId: "main" })).toBe("off");
+    expect(resolveMarkdownTableMode({ cfg, channel: "feishu", accountId: "other" })).toBe("code");
   });
 
   it("coerces explicit block mode to code for slack", () => {

@@ -235,6 +235,36 @@ describe("FeishuConfigSchema optimization flags", () => {
   });
 });
 
+describe("FeishuConfigSchema markdown tables", () => {
+  it("accepts shared top-level table mode", () => {
+    const result = FeishuConfigSchema.parse({
+      markdown: { tables: "bullets" },
+    });
+
+    expect(result.markdown?.tables).toBe("bullets");
+  });
+
+  it("accepts shared account-level table mode", () => {
+    const result = FeishuConfigSchema.parse({
+      accounts: {
+        main: {
+          markdown: { tables: "off" },
+        },
+      },
+    });
+
+    expect(result.accounts?.main?.markdown?.tables).toBe("off");
+  });
+
+  it("rejects unsupported table mode values", () => {
+    const result = FeishuConfigSchema.safeParse({
+      markdown: { tables: "ascii" },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
 describe("FeishuConfigSchema TTS overrides", () => {
   it("accepts top-level and account-level TTS overrides", () => {
     const result = FeishuConfigSchema.parse({
