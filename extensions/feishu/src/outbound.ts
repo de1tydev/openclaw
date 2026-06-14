@@ -27,6 +27,7 @@ import { createFeishuClient } from "./client.js";
 import { cleanupAmbientCommentTypingReaction } from "./comment-reaction.js";
 import { parseFeishuCommentTarget } from "./comment-target.js";
 import { deliverCommentThreadText } from "./drive.js";
+import { containsFeishuMarkdownTable } from "./markdown-table-card.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
 import { chunkTextForOutbound, type ChannelOutboundAdapter } from "./outbound-runtime-api.js";
 import { buildFeishuPresentationCardElements } from "./presentation-card.js";
@@ -82,7 +83,7 @@ function normalizePossibleLocalImagePath(text: string | undefined): string | nul
 }
 
 function shouldUseCard(text: string): boolean {
-  return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+  return /```[\s\S]*?```/.test(text) || containsFeishuMarkdownTable(text);
 }
 
 function markRenderedFeishuCard(card: Record<string, unknown>): Record<string, unknown> {

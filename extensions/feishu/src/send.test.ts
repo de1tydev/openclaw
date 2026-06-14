@@ -177,7 +177,7 @@ describe("getMessageFeishu", () => {
     });
   });
 
-  it("converts markdown tables before sending markdown cards", async () => {
+  it("sends markdown tables as native Feishu table cards", async () => {
     const create = vi.fn().mockResolvedValue({ code: 0, data: { message_id: "om_card" } });
     mockCreateFeishuClient.mockReturnValue({
       im: {
@@ -189,8 +189,6 @@ describe("getMessageFeishu", () => {
         },
       },
     });
-    mockResolveMarkdownTableMode.mockReturnValue("code");
-    mockConvertMarkdownTables.mockReturnValue("converted table");
 
     await sendMarkdownCardFeishu({
       cfg: {} as ClawdbotConfig,
@@ -200,19 +198,20 @@ describe("getMessageFeishu", () => {
     });
 
     const content = JSON.parse(create.mock.calls[0][0].data.content);
-    expect(mockResolveMarkdownTableMode).toHaveBeenCalledWith({
-      cfg: {},
-      channel: "feishu",
-      accountId: "main",
-    });
-    expect(mockConvertMarkdownTables).toHaveBeenCalledWith(
-      "| A | B |\n|---|---|\n| 1 | 2 |",
-      "code",
+    expect(content.body.elements[0]).toEqual(
+      expect.objectContaining({
+        tag: "table",
+        columns: [
+          expect.objectContaining({ display_name: "A", name: "col_0" }),
+          expect.objectContaining({ display_name: "B", name: "col_1" }),
+        ],
+        rows: [{ col_0: "1", col_1: "2" }],
+      }),
     );
-    expect(content.body.elements[0].content).toBe("converted table");
+    expect(mockConvertMarkdownTables).not.toHaveBeenCalled();
   });
 
-  it("converts markdown tables before sending structured cards", async () => {
+  it("sends markdown tables as native structured cards with headers", async () => {
     const create = vi.fn().mockResolvedValue({ code: 0, data: { message_id: "om_structured" } });
     mockCreateFeishuClient.mockReturnValue({
       im: {
@@ -224,8 +223,6 @@ describe("getMessageFeishu", () => {
         },
       },
     });
-    mockResolveMarkdownTableMode.mockReturnValue("code");
-    mockConvertMarkdownTables.mockReturnValue("converted table");
 
     await sendStructuredCardFeishu({
       cfg: {} as ClawdbotConfig,
@@ -235,12 +232,81 @@ describe("getMessageFeishu", () => {
     });
 
     const content = JSON.parse(create.mock.calls[0][0].data.content);
-    expect(mockConvertMarkdownTables).toHaveBeenCalledWith(
-      "| A | B |\n|---|---|\n| 1 | 2 |",
-      "code",
+    expect(content.body.elements[0]).toEqual(
+      expect.objectContaining({
+        tag: "table",
+        rows: [{ col_0: "1", col_1: "2" }],
+      }),
     );
-    expect(content.body.elements[0].content).toBe("converted table");
     expect(content.header.title.content).toBe("agent");
+    expect(mockConvertMarkdownTables).not.toHaveBeenCalled();
+  });
+
+  it("falls back to post content when the first native table card is rejected", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({ code: 9499, msg: "invalid card" })
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om_fallback" } });
+    mockCreateFeishuClient.mockReturnValue({
+      im: {
+        message: {
+          create,
+          get: mockClientGet,
+          list: mockClientList,
+          patch: mockClientPatch,
+        },
+      },
+    });
+    mockConvertMarkdownTables.mockReturnValue("fallback table");
+
+    const result = await sendMarkdownCardFeishu({
+      cfg: {} as ClawdbotConfig,
+      to: "oc_card",
+      text: "| A | B |\n|---|---|\n| 1 | 2 |",
+      accountId: "main",
+    });
+
+    expect(result.messageId).toBe("om_fallback");
+    expect(create.mock.calls[0][0].data.msg_type).toBe("interactive");
+    expect(create.mock.calls[1][0].data.msg_type).toBe("post");
+    const post = JSON.parse(create.mock.calls[1][0].data.content);
+    expect(post.zh_cn.content[0][0].text).toBe("fallback table");
+  });
+
+  it("preserves reply thread fields when sending native table cards", async () => {
+    const reply = vi.fn().mockResolvedValue({ code: 0, data: { message_id: "om_reply_card" } });
+    const create = vi.fn();
+    mockCreateFeishuClient.mockReturnValue({
+      im: {
+        message: {
+          create,
+          reply,
+          get: mockClientGet,
+          list: mockClientList,
+          patch: mockClientPatch,
+        },
+      },
+    });
+
+    await sendStructuredCardFeishu({
+      cfg: {} as ClawdbotConfig,
+      to: "oc_card",
+      text: "| A | B |\n|---|---|\n| 1 | 2 |",
+      replyToMessageId: "om_parent",
+      replyInThread: true,
+      accountId: "main",
+    });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith({
+      path: { message_id: "om_parent" },
+      data: expect.objectContaining({
+        msg_type: "interactive",
+        reply_in_thread: true,
+      }),
+    });
+    const content = JSON.parse(reply.mock.calls[0][0].data.content);
+    expect(content.body.elements[0]).toEqual(expect.objectContaining({ tag: "table" }));
   });
 
   it("sends text without requiring Feishu runtime text helpers", async () => {
@@ -349,6 +415,50 @@ describe("getMessageFeishu", () => {
       createTime: undefined,
       threadId: undefined,
     });
+  });
+
+  it("extracts native table card content as recoverable markdown", async () => {
+    mockClientGet.mockResolvedValueOnce({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_table_card",
+            chat_id: "oc_table_card",
+            msg_type: "interactive",
+            body: {
+              content: JSON.stringify({
+                schema: "2.0",
+                body: {
+                  elements: [
+                    {
+                      tag: "table",
+                      columns: [
+                        { name: "col_0", display_name: "Name", horizontal_align: "left" },
+                        { name: "col_1", display_name: "Score", horizontal_align: "right" },
+                      ],
+                      rows: [
+                        { col_0: "Ada | Lovelace", col_1: 10 },
+                        { col_0: "`Grace | Hopper`", col_1: 9 },
+                      ],
+                    },
+                  ],
+                },
+              }),
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getMessageFeishu({
+      cfg: {} as ClawdbotConfig,
+      messageId: "om_table_card",
+    });
+
+    expect(result?.content).toBe(
+      "| Name | Score |\n| --- | ---: |\n| Ada \\| Lovelace | 10 |\n| `Grace \\| Hopper` | 9 |",
+    );
   });
 
   it("does not treat client-upgrade interactive fallback text as recovered card content", async () => {

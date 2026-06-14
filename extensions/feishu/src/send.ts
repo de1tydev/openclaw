@@ -11,6 +11,7 @@ import type { ClawdbotConfig } from "../runtime-api.js";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { requestFeishuApi } from "./comment-shared.js";
+import { buildFeishuMarkdownTableCards } from "./markdown-table-card.js";
 import type { MentionTarget } from "./mention-target.types.js";
 import { buildMentionedCardContent, buildMentionedMessage } from "./mention.js";
 import { parsePostContent } from "./post.js";
@@ -253,6 +254,85 @@ function applyCardTemplateVariables(text: string, variables: Map<string, string>
   });
 }
 
+function stringifyInteractiveTableCell(value: unknown, variables: Map<string, string>): string {
+  if (typeof value === "string") {
+    return applyCardTemplateVariables(value, variables);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyInteractiveTableCell(item, variables)).join(", ");
+  }
+  if (isRecord(value)) {
+    const text = value.text ?? value.content ?? value.name ?? value.label;
+    if (typeof text === "string") {
+      return applyCardTemplateVariables(text, variables);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function escapeInteractiveTableCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+
+function renderInteractiveTableText(
+  element: Record<string, unknown>,
+  variables: Map<string, string>,
+): string | undefined {
+  const rawColumns = Array.isArray(element.columns) ? element.columns : [];
+  const columns = rawColumns
+    .map((column, index) => {
+      if (!isRecord(column)) {
+        return null;
+      }
+      const rawName = typeof column.name === "string" ? column.name.trim() : "";
+      const name = rawName || `col_${index}`;
+      const displayName =
+        typeof column.display_name === "string" && column.display_name.trim()
+          ? column.display_name.trim()
+          : name;
+      const horizontalAlign =
+        column.horizontal_align === "center" || column.horizontal_align === "right"
+          ? column.horizontal_align
+          : "left";
+      return { name, displayName, horizontalAlign };
+    })
+    .filter(
+      (column): column is { name: string; displayName: string; horizontalAlign: string } =>
+        column !== null,
+    );
+  if (columns.length === 0) {
+    return undefined;
+  }
+
+  const separator = columns.map((column) =>
+    column.horizontalAlign === "center"
+      ? ":---:"
+      : column.horizontalAlign === "right"
+        ? "---:"
+        : "---",
+  );
+  const rows = (Array.isArray(element.rows) ? element.rows : [])
+    .filter(isRecord)
+    .map((row) =>
+      columns.map((column) =>
+        escapeInteractiveTableCell(stringifyInteractiveTableCell(row[column.name], variables)),
+      ),
+    );
+  return [
+    `| ${columns.map((column) => escapeInteractiveTableCell(column.displayName)).join(" | ")} |`,
+    `| ${separator.join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
+
 function extractInteractiveElementText(
   element: unknown,
   variables: Map<string, string>,
@@ -280,6 +360,9 @@ function extractInteractiveElementText(
   }
   if (tag === "plain_text" && typeof element.content === "string") {
     return applyCardTemplateVariables(element.content, variables);
+  }
+  if (tag === "table") {
+    return renderInteractiveTableText(element, variables);
   }
   return undefined;
 }
@@ -957,6 +1040,73 @@ export function resolveFeishuCardTemplate(template?: string): string | undefined
   return normalized;
 }
 
+function resolveNativeTableCardHeader(
+  header?: CardHeaderConfig,
+): { title: string; template?: string } | undefined {
+  if (!header?.title.trim()) {
+    return undefined;
+  }
+  return {
+    title: header.title,
+    template: resolveFeishuCardTemplate(header.template) ?? "blue",
+  };
+}
+
+async function sendNativeMarkdownTableCardsFeishu(params: {
+  cfg: ClawdbotConfig;
+  to: string;
+  text: string;
+  fallbackText?: string;
+  replyToMessageId?: string;
+  replyInThread?: boolean;
+  allowTopLevelReplyFallback?: boolean;
+  mentions?: MentionTarget[];
+  accountId?: string;
+  header?: CardHeaderConfig;
+  note?: string;
+}): Promise<FeishuSendResult | null> {
+  const cards = buildFeishuMarkdownTableCards(params.text, {
+    header: resolveNativeTableCardHeader(params.header),
+    note: params.note,
+  });
+  if (!cards) {
+    return null;
+  }
+
+  let sentAny = false;
+  let lastResult: FeishuSendResult | null = null;
+  try {
+    for (const card of cards) {
+      lastResult = await sendCardFeishu({
+        cfg: params.cfg,
+        to: params.to,
+        card: card.card,
+        replyToMessageId: params.replyToMessageId,
+        replyInThread: params.replyInThread,
+        allowTopLevelReplyFallback: params.allowTopLevelReplyFallback,
+        accountId: params.accountId,
+        recoverableText: card.recoverableText,
+      });
+      sentAny = true;
+    }
+  } catch (err) {
+    if (sentAny) {
+      throw err;
+    }
+    return sendMessageFeishu({
+      cfg: params.cfg,
+      to: params.to,
+      text: params.fallbackText ?? params.text,
+      replyToMessageId: params.replyToMessageId,
+      replyInThread: params.replyInThread,
+      allowTopLevelReplyFallback: params.allowTopLevelReplyFallback,
+      mentions: params.mentions,
+      accountId: params.accountId,
+    });
+  }
+  return lastResult;
+}
+
 /**
  * Build a Feishu interactive card with optional header and note footer.
  * When header/note are omitted, behaves identically to buildMarkdownCard.
@@ -1019,6 +1169,22 @@ export async function sendStructuredCardFeishu(params: {
   if (mentions && mentions.length > 0) {
     cardText = buildMentionedCardContent(mentions, text);
   }
+  const nativeTableResult = await sendNativeMarkdownTableCardsFeishu({
+    cfg,
+    to,
+    text: cardText,
+    fallbackText: text,
+    replyToMessageId,
+    replyInThread,
+    allowTopLevelReplyFallback,
+    mentions,
+    accountId,
+    header,
+    note,
+  });
+  if (nativeTableResult) {
+    return nativeTableResult;
+  }
   cardText = convertFeishuMarkdownTablesForDelivery(cfg, cardText, accountId);
   const card = buildStructuredCard(cardText, { header, note });
   return sendCardFeishu({
@@ -1062,6 +1228,20 @@ export async function sendMarkdownCardFeishu(params: {
   let cardText = text;
   if (mentions && mentions.length > 0) {
     cardText = buildMentionedCardContent(mentions, text);
+  }
+  const nativeTableResult = await sendNativeMarkdownTableCardsFeishu({
+    cfg,
+    to,
+    text: cardText,
+    fallbackText: text,
+    replyToMessageId,
+    replyInThread,
+    allowTopLevelReplyFallback,
+    mentions,
+    accountId,
+  });
+  if (nativeTableResult) {
+    return nativeTableResult;
   }
   cardText = convertFeishuMarkdownTablesForDelivery(cfg, cardText, accountId);
   const card = buildMarkdownCard(cardText);

@@ -14,6 +14,7 @@ import {
 import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
+import { containsFeishuMarkdownTable } from "./markdown-table-card.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
 import {
   createReplyPrefixContext,
@@ -30,7 +31,7 @@ import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } 
 
 /** Detect if text contains markdown elements that benefit from card rendering */
 function shouldUseCard(text: string): boolean {
-  return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+  return /```[\s\S]*?```/.test(text) || containsFeishuMarkdownTable(text);
 }
 
 /** Maximum age (ms) for a message to receive a typing indicator reaction.
@@ -272,7 +273,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     return `> 💭 **Thinking**\n${lines.join("\n")}`;
   };
 
-  const hasMarkdownTable = (text: string): boolean => /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+  const hasMarkdownTable = (text: string): boolean => containsFeishuMarkdownTable(text);
 
   const buildCombinedStreamText = (thinking: string, answer: string): string => {
     const parts: string[] = [];
@@ -420,6 +421,28 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         statusLine = "";
         const text = buildCombinedStreamText(reasoningText, streamText);
         const finalNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
+        if (hasMarkdownTable(text)) {
+          await streaming.discard();
+          await sendStructuredCardFeishu({
+            cfg,
+            to: chatId,
+            text,
+            replyToMessageId: sendReplyToMessageId,
+            replyInThread: effectiveReplyInThread,
+            allowTopLevelReplyFallback,
+            accountId,
+            header: resolveCardHeader(agentId, identity),
+            note: finalNote,
+          });
+          markVisibleReplySent();
+          if (streamText) {
+            deliveredFinalTexts.add(streamText);
+            if (options?.markClosedForReply !== false && !streamingCloseErroredForReply) {
+              streamingClosedForReply = true;
+            }
+          }
+          return;
+        }
         const contentVisible = await streaming.close(
           core.channel.text.convertMarkdownTables(text, tableMode),
           {
@@ -477,15 +500,20 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     infoKind?: string;
     sendChunk: (params: { chunk: string; isFirst: boolean }) => Promise<void>;
   }) => {
-    const chunkSource = core.channel.text.convertMarkdownTables(paramsLocal.text, tableMode);
+    const useNativeTableCard = paramsLocal.useCard && hasMarkdownTable(paramsLocal.text);
+    const chunkSource = useNativeTableCard
+      ? paramsLocal.text
+      : core.channel.text.convertMarkdownTables(paramsLocal.text, tableMode);
     const chunkText =
       paramsLocal.useCard && typeof core.channel.text.chunkMarkdownTextWithMode === "function"
         ? core.channel.text.chunkMarkdownTextWithMode
         : core.channel.text.chunkTextWithMode;
-    const chunks = resolveTextChunksWithFallback(
-      chunkSource,
-      chunkText(chunkSource, textChunkLimit, chunkMode),
-    );
+    const chunks = useNativeTableCard
+      ? [chunkSource]
+      : resolveTextChunksWithFallback(
+          chunkSource,
+          chunkText(chunkSource, textChunkLimit, chunkMode),
+        );
     for (const [index, chunk] of chunks.entries()) {
       await paramsLocal.sendChunk({
         chunk,

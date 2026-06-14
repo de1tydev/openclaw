@@ -701,7 +701,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     expect(sendMessageFeishuMock).not.toHaveBeenCalled();
     expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
   });
-  it("skips streaming updates for markdown tables and converts them on close", async () => {
+  it("skips streaming updates for markdown tables and sends the final native card separately", async () => {
     const convertMarkdownTables = vi.fn((text: string) => `converted:${text}`);
     const resolveMarkdownTableMode = vi.fn(() => "code");
     getFeishuRuntimeMock.mockReturnValue({
@@ -733,14 +733,19 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       channel: "feishu",
       accountId: "main",
     });
-    expect(convertMarkdownTables).toHaveBeenCalledWith(table, "code");
+    expect(convertMarkdownTables).not.toHaveBeenCalled();
     expect(streamingInstances[0].update).not.toHaveBeenCalled();
-    expect(streamingInstances[0].close).toHaveBeenCalledWith(`converted:${table}`, {
-      note: "Agent: agent",
-    });
+    expect(streamingInstances[0].discard).toHaveBeenCalledTimes(1);
+    expect(streamingInstances[0].close).not.toHaveBeenCalled();
+    expect(sendStructuredCardFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: table,
+        note: "Agent: agent",
+      }),
+    );
   });
 
-  it("converts markdown tables before non-streaming card fallback", async () => {
+  it("preserves markdown tables for non-streaming native card fallback", async () => {
     const convertMarkdownTables = vi.fn((text: string) => `converted:${text}`);
     const resolveMarkdownTableMode = vi.fn(() => "code");
     getFeishuRuntimeMock.mockReturnValue({
@@ -781,8 +786,9 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       accountId: "main",
     });
     expect(sendStructuredCardFeishuMock).toHaveBeenCalledWith(
-      expect.objectContaining({ text: `converted:${table}` }),
+      expect.objectContaining({ text: table }),
     );
+    expect(convertMarkdownTables).not.toHaveBeenCalled();
     expect(sendMessageFeishuMock).not.toHaveBeenCalled();
   });
 
