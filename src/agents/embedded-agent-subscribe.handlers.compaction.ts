@@ -181,7 +181,10 @@ export function handleCompactionEnd(ctx: EmbeddedAgentSubscribeContext, evt: Com
             compactedCount: ctx.getCompactionCount(),
             sessionFile: ctx.params.session.sessionFile,
           },
-          { sessionKey: ctx.params.sessionKey },
+          {
+            sessionKey: ctx.params.sessionKey,
+            messageProvider: resolveCompactionHookMessageProvider(ctx),
+          },
         )
         .catch((err: unknown) => {
           ctx.log.warn(`after_compaction hook failed: ${String(err)}`);

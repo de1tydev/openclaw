@@ -4,6 +4,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const hookRunnerMocks = vi.hoisted(() => ({
+  getGlobalHookRunner: vi.fn(() => null),
+  runBeforeCompaction: vi.fn(),
+  runAfterCompaction: vi.fn(),
+}));
+
+vi.mock("../plugins/hook-runner-global.js", () => ({
+  getGlobalHookRunner: hookRunnerMocks.getGlobalHookRunner,
+}));
 import { drainSessionStoreWriterQueuesForTest } from "../config/sessions.js";
 import {
   readCompactionCount,
@@ -21,6 +31,8 @@ function createCompactionContext(params: {
   storePath: string;
   sessionKey: string;
   agentId?: string;
+  messageChannel?: string;
+  messageProvider?: string;
   initialCount: number;
   info?: (message: string, meta?: Record<string, unknown>) => void;
 }): EmbeddedAgentSubscribeContext {
@@ -35,6 +47,8 @@ function createCompactionContext(params: {
       sessionKey: params.sessionKey,
       sessionId: "session-1",
       agentId: params.agentId ?? "test-agent",
+      messageChannel: params.messageChannel,
+      messageProvider: params.messageProvider,
       onAgentEvent: undefined,
     },
     state: {
@@ -78,6 +92,10 @@ function loggedInfoMessageAt(info: ReturnType<typeof vi.fn>, index: number): str
 }
 
 afterEach(async () => {
+  hookRunnerMocks.getGlobalHookRunner.mockReset();
+  hookRunnerMocks.getGlobalHookRunner.mockReturnValue(null);
+  hookRunnerMocks.runBeforeCompaction.mockReset();
+  hookRunnerMocks.runAfterCompaction.mockReset();
   await drainSessionStoreWriterQueuesForTest();
 });
 
@@ -126,6 +144,62 @@ describe("reconcileSessionStoreCompactionCountAfterSuccess", () => {
 
     expect(nextCount).toBe(3);
     expect(await readCompactionCount(storePath, sessionKey)).toBe(3);
+  });
+});
+
+describe("compaction hook provider context", () => {
+  it("passes message provider to subscribe compaction hooks", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-compaction-hook-provider-"));
+    const storePath = path.join(tmp, "sessions.json");
+    const sessionKey = "agent:main:telegram:dm:chat-1";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      compactionCount: 0,
+    });
+    const hookRunner = {
+      hasHooks: vi.fn(
+        (name: string) => name === "before_compaction" || name === "after_compaction",
+      ),
+      runBeforeCompaction: hookRunnerMocks.runBeforeCompaction.mockResolvedValue(undefined),
+      runAfterCompaction: hookRunnerMocks.runAfterCompaction.mockResolvedValue(undefined),
+    };
+    hookRunnerMocks.getGlobalHookRunner.mockReturnValue(hookRunner as never);
+    const ctx = createCompactionContext({
+      storePath,
+      sessionKey,
+      messageChannel: "telegram",
+      initialCount: 0,
+    });
+
+    handleCompactionStart(ctx, {
+      type: "compaction_start",
+      reason: "threshold",
+    });
+    handleCompactionEnd(ctx, {
+      type: "compaction_end",
+      reason: "threshold",
+      result: { kept: 12 },
+      willRetry: false,
+      aborted: false,
+    });
+
+    await vi.waitFor(() => {
+      expect(hookRunnerMocks.runBeforeCompaction).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          sessionKey,
+          messageProvider: "telegram",
+        }),
+      );
+      expect(hookRunnerMocks.runAfterCompaction).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          sessionKey,
+          messageProvider: "telegram",
+        }),
+      );
+    });
   });
 });
 
