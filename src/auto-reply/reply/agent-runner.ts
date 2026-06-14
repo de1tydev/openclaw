@@ -265,6 +265,24 @@ function hasSuccessfulSourceReplyDelivery(params: {
   );
 }
 
+function hasImplicitMessageToolSourceReplyDelivery(params: {
+  sourceReplyDeliveryMode?: string;
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  messagingToolSentTargets?: unknown[];
+}): boolean {
+  if (params.sourceReplyDeliveryMode !== "message_tool_only") {
+    return false;
+  }
+  if (hasCommittedMessagingTargetDeliveryEvidence(params.messagingToolSentTargets)) {
+    return false;
+  }
+  return (
+    hasNonEmptyStringArray(params.messagingToolSentTexts) ||
+    hasNonEmptyStringArray(params.messagingToolSentMediaUrls)
+  );
+}
+
 function resolveConfiguredFallbackModel(params: {
   run: FollowupRun["run"];
   fallbackStateEntry?: SessionEntry;
@@ -1847,12 +1865,16 @@ export async function runReplyAgent(params: {
     });
     const committedMessagingToolSourceReplyDelivery =
       runResult.didDeliverSourceReplyViaMessageTool === true ||
-      hasVisibleAgentPayload({ payloads: runResult.messagingToolSourceReplyPayloads });
-    if (
-      opts?.sourceReplyDeliveryMode === "message_tool_only" &&
-      committedMessagingToolSourceReplyDelivery
-    ) {
-      await opts.onObservedReplyDelivery?.();
+      hasVisibleAgentPayload({ payloads: runResult.messagingToolSourceReplyPayloads }) ||
+      hasImplicitMessageToolSourceReplyDelivery({
+        sourceReplyDeliveryMode:
+          followupRun.run.sourceReplyDeliveryMode ?? opts?.sourceReplyDeliveryMode,
+        messagingToolSentTexts: runResult.messagingToolSentTexts,
+        messagingToolSentMediaUrls: runResult.messagingToolSentMediaUrls,
+        messagingToolSentTargets: runResult.messagingToolSentTargets,
+      });
+    if (committedMessagingToolSourceReplyDelivery) {
+      await opts?.onObservedReplyDelivery?.();
     }
     const returnSilentFallbackFailureIfNeeded = async (): Promise<ReplyPayload | undefined> => {
       const silentFallbackFailurePayload = buildSilentFallbackFailurePayload({

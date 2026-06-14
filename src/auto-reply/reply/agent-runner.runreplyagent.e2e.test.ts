@@ -1596,6 +1596,85 @@ describe("runReplyAgent typing (heartbeat)", () => {
     }
   });
 
+  it("marks implicit current-conversation message tool media sends as observed delivery", async () => {
+    const onObservedReplyDelivery = vi.fn();
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: ["/tmp/report.md"],
+      messagingToolSentTargets: [],
+      meta: {},
+    });
+
+    const { run } = createMinimalRun({
+      opts: { sourceReplyDeliveryMode: "message_tool_only", onObservedReplyDelivery },
+      sessionCtx: {
+        Provider: "feishu",
+        OriginatingChannel: "feishu",
+        MessageSid: "om_current",
+      },
+    });
+
+    await run();
+
+    expect(onObservedReplyDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mark explicit outbound message tool sends as source observed delivery", async () => {
+    const onObservedReplyDelivery = vi.fn();
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: ["/tmp/report.md"],
+      messagingToolSentTargets: [
+        {
+          tool: "message",
+          provider: "feishu",
+          to: "user:ou_other",
+          mediaUrls: ["/tmp/report.md"],
+        },
+      ],
+      meta: {},
+    });
+
+    const { run } = createMinimalRun({
+      opts: { sourceReplyDeliveryMode: "message_tool_only", onObservedReplyDelivery },
+      sessionCtx: {
+        Provider: "feishu",
+        OriginatingChannel: "feishu",
+        MessageSid: "om_current",
+      },
+    });
+
+    await run();
+
+    expect(onObservedReplyDelivery).not.toHaveBeenCalled();
+  });
+
+  it("does not mark implicit message tool sends as observed delivery outside message_tool_only", async () => {
+    const onObservedReplyDelivery = vi.fn();
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: ["/tmp/report.md"],
+      messagingToolSentTargets: [],
+      meta: {},
+    });
+
+    const { run } = createMinimalRun({
+      opts: { sourceReplyDeliveryMode: "automatic", onObservedReplyDelivery },
+      sessionCtx: {
+        Provider: "feishu",
+        OriginatingChannel: "feishu",
+        MessageSid: "om_current",
+      },
+    });
+
+    await run();
+
+    expect(onObservedReplyDelivery).not.toHaveBeenCalled();
+  });
+
   it("does not treat whitespace-only messaging evidence as fallback delivery", async () => {
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "NO_REPLY" }],
