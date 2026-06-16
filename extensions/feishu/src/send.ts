@@ -1,4 +1,5 @@
 // Feishu plugin module implements send behavior.
+import { randomUUID } from "node:crypto";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import {
@@ -88,11 +89,11 @@ type FeishuCreateMessageClient = {
     message: {
       reply: (opts: {
         path: { message_id: string };
-        data: { content: string; msg_type: string; reply_in_thread?: true };
+        data: { content: string; msg_type: string; reply_in_thread?: true; uuid?: string };
       }) => Promise<{ code?: number; msg?: string; data?: { message_id?: string } }>;
       create: (opts: {
         params: { receive_id_type: "chat_id" | "email" | "open_id" | "union_id" | "user_id" };
-        data: { receive_id: string; content: string; msg_type: string };
+        data: { receive_id: string; content: string; msg_type: string; uuid?: string };
       }) => Promise<{ code?: number; msg?: string; data?: { message_id?: string } }>;
     };
   };
@@ -131,6 +132,7 @@ async function sendFallbackDirect(
     receiveIdType: "chat_id" | "email" | "open_id" | "union_id" | "user_id";
     content: string;
     msgType: string;
+    uuid?: string;
   },
   errorPrefix: string,
 ): Promise<FeishuSendResult> {
@@ -142,6 +144,7 @@ async function sendFallbackDirect(
           receive_id: params.receiveId,
           content: params.content,
           msg_type: params.msgType,
+          uuid: params.uuid,
         },
       }),
     errorPrefix,
@@ -169,8 +172,13 @@ async function sendReplyOrFallbackDirect(
     replyErrorPrefix: string;
   },
 ): Promise<FeishuSendResult> {
+  const deliveryUuid = randomUUID();
   if (!params.replyToMessageId) {
-    return sendFallbackDirect(client, params.directParams, params.directErrorPrefix);
+    return sendFallbackDirect(
+      client,
+      { ...params.directParams, uuid: deliveryUuid },
+      params.directErrorPrefix,
+    );
   }
 
   const replyTargetFallbackError =
@@ -189,6 +197,7 @@ async function sendReplyOrFallbackDirect(
           data: {
             content: params.content,
             msg_type: params.msgType,
+            uuid: deliveryUuid,
             ...(params.replyInThread ? { reply_in_thread: true } : {}),
           },
         }),
@@ -202,13 +211,21 @@ async function sendReplyOrFallbackDirect(
     if (replyTargetFallbackError) {
       throw replyTargetFallbackError;
     }
-    return sendFallbackDirect(client, params.directParams, params.directErrorPrefix);
+    return sendFallbackDirect(
+      client,
+      { ...params.directParams, uuid: deliveryUuid },
+      params.directErrorPrefix,
+    );
   }
   if (shouldFallbackFromReplyTarget(response)) {
     if (replyTargetFallbackError) {
       throw replyTargetFallbackError;
     }
-    return sendFallbackDirect(client, params.directParams, params.directErrorPrefix);
+    return sendFallbackDirect(
+      client,
+      { ...params.directParams, uuid: deliveryUuid },
+      params.directErrorPrefix,
+    );
   }
   assertFeishuMessageApiSuccess(response, params.replyErrorPrefix);
   return toFeishuSendResult(

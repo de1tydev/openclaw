@@ -94,6 +94,13 @@ export function createFeishuApiError(
 // 11232: tenant-level "create message service trigger rate limit" (100/min, 5/sec per app/bot).
 // Distinct from FEISHU_BACKOFF_CODES in typing.ts, which covers the reaction API (99991400+).
 const FEISHU_SEND_RATE_LIMIT_CODES = new Set([230020, 11232]);
+const FEISHU_TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EAI_AGAIN",
+]);
 const FEISHU_SEND_MAX_RETRIES = 2;
 const FEISHU_SEND_RETRY_BASE_MS = 500;
 
@@ -117,6 +124,21 @@ export function getFeishuSendRateLimitCode(error: unknown): number | undefined {
   const data = isRecord(response?.data) ? response.data : undefined;
   const code = data?.code;
   return typeof code === "number" && FEISHU_SEND_RATE_LIMIT_CODES.has(code) ? code : undefined;
+}
+
+function isFeishuTransientTransportError(error: unknown): boolean {
+  if (!isRecord(error)) {
+    return false;
+  }
+  if (isRecord(error.response)) {
+    return false;
+  }
+  const code = readString(error.code);
+  if (code && FEISHU_TRANSIENT_TRANSPORT_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const cause = isRecord(error.cause) ? error.cause : undefined;
+  return cause ? isFeishuTransientTransportError(cause) : false;
 }
 
 /**
@@ -173,11 +195,12 @@ export async function requestFeishuApi<T>(
       return result;
     } catch (error) {
       const isRetryable =
-        attempt < FEISHU_SEND_MAX_RETRIES && getFeishuSendRateLimitCode(error) !== undefined;
+        attempt < FEISHU_SEND_MAX_RETRIES &&
+        (getFeishuSendRateLimitCode(error) !== undefined || isFeishuTransientTransportError(error));
       if (!isRetryable) {
         throw createFeishuApiError(error, errorPrefix, options);
       }
-      // Rate-limit on a non-final attempt — loop continues to next retry.
+      // Transient send failure on a non-final attempt — loop continues to next retry.
     }
   }
   // Exhausted retries while the SDK kept fulfilling rate-limit bodies. Surface

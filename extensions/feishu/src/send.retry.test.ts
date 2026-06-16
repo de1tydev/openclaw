@@ -37,6 +37,10 @@ function http429Error() {
   });
 }
 
+function transientNetworkError(code: string, message = code) {
+  return Object.assign(new Error(message), { code });
+}
+
 // Use retryDelayMs: 0 throughout to keep tests fast with no real delays.
 const NO_DELAY = { retryDelayMs: 0 };
 
@@ -135,6 +139,43 @@ describe("requestFeishuApi — no retry for non-rate-limit errors", () => {
     const request = vi.fn().mockRejectedValue(new Error("network failure"));
 
     await expect(requestFeishuApi(request, "prefix", NO_DELAY)).rejects.toThrow(/network failure/);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("requestFeishuApi — retry on transient transport errors", () => {
+  it("retries ECONNRESET and succeeds on the second attempt", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(transientNetworkError("ECONNRESET", "read ECONNRESET"))
+      .mockResolvedValueOnce("ok-after-reset");
+
+    const result = await requestFeishuApi(request, "prefix", NO_DELAY);
+
+    expect(result).toBe("ok-after-reset");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries nested ECONNRESET causes and succeeds", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("wrapped", { cause: transientNetworkError("ECONNRESET") }))
+      .mockResolvedValueOnce("ok-after-nested-reset");
+
+    const result = await requestFeishuApi(request, "prefix", NO_DELAY);
+
+    expect(result).toBe("ok-after-nested-reset");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry Feishu business errors even when the error code string looks transient", async () => {
+    const request = vi.fn().mockRejectedValue(
+      Object.assign(transientNetworkError("ECONNRESET", "Request failed with status code 400"), {
+        response: { status: 400, data: { code: 230001, msg: "permission error" } },
+      }),
+    );
+
+    await expect(requestFeishuApi(request, "prefix", NO_DELAY)).rejects.toThrow(/230001/);
     expect(request).toHaveBeenCalledTimes(1);
   });
 });

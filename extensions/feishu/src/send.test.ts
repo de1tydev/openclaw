@@ -303,10 +303,43 @@ describe("getMessageFeishu", () => {
       data: expect.objectContaining({
         msg_type: "interactive",
         reply_in_thread: true,
+        uuid: expect.any(String),
       }),
     });
     const content = JSON.parse(reply.mock.calls[0][0].data.content);
     expect(content.body.elements[0]).toEqual(expect.objectContaining({ tag: "table" }));
+  });
+
+  it("uses the same Feishu uuid when retrying a transient reply failure", async () => {
+    const reply = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }))
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om_retry_ok" } });
+    mockCreateFeishuClient.mockReturnValue({
+      im: {
+        message: {
+          create: vi.fn(),
+          reply,
+          get: mockClientGet,
+          list: mockClientList,
+          patch: mockClientPatch,
+        },
+      },
+    });
+
+    await sendStructuredCardFeishu({
+      cfg: {} as ClawdbotConfig,
+      to: "oc_card",
+      text: "retry me",
+      replyToMessageId: "om_parent",
+      accountId: "main",
+    });
+
+    expect(reply).toHaveBeenCalledTimes(2);
+    const firstUuid = reply.mock.calls[0][0].data.uuid;
+    const secondUuid = reply.mock.calls[1][0].data.uuid;
+    expect(firstUuid).toEqual(expect.any(String));
+    expect(secondUuid).toBe(firstUuid);
   });
 
   it("sends text without requiring Feishu runtime text helpers", async () => {
