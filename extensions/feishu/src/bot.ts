@@ -1417,27 +1417,28 @@ export async function handleFeishuMessage(params: {
     // Determine reply target based on group session mode:
     // - Topic-mode groups (group_topic / group_topic_sender): reply to the topic
     //   root so the bot stays in the same thread.
-    // - Groups with explicit replyInThread config: reply to the root so the bot
-    //   stays in the thread the user expects.
-    // - Normal groups: reply to the triggering message itself. Quoted-message
-    //   metadata (reply_target_message_id/root_id/parent_id) is inbound context,
-    //   not the outbound reply anchor; otherwise commands sent with a quote can
-    //   be routed back into the quoted message's thread.
+    // - Real Feishu topic events and explicit replyInThread config: reply via
+    //   message.reply so the bot stays in the thread the user expects.
+    // - Normal groups: send top-level messages. Quote metadata
+    //   (reply_target_message_id/root_id/parent_id) is inbound context only.
     const isTopicSession =
       isGroup &&
       (groupSession?.groupSessionScope === "group_topic" ||
         groupSession?.groupSessionScope === "group_topic_sender");
+    const isInboundFeishuThread =
+      isGroup && (Boolean(ctx.threadId?.trim()) || ctx.chatType === "topic_group");
     const configReplyInThread =
       isGroup &&
       (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled";
-    const shouldReplyInFeishuThread = isTopicSession || configReplyInThread;
+    const shouldReplyInFeishuThread =
+      isTopicSession || isInboundFeishuThread || configReplyInThread;
     const topicReplyTargetMessageId =
-      ctx.rootId ?? ctx.replyTargetMessageId ?? (ctx.suppressReplyTarget ? undefined : ctx.messageId);
+      ctx.rootId ??
+      ctx.replyTargetMessageId ??
+      (ctx.suppressReplyTarget ? undefined : ctx.messageId);
     const normalGroupReplyTargetMessageId = ctx.syntheticCardAction
       ? ctx.replyTargetMessageId
-      : ctx.suppressReplyTarget
-        ? undefined
-        : ctx.messageId;
+      : undefined;
     const replyTargetMessageId = directThreadReply
       ? directThreadReplyTargetMessageId
       : shouldReplyInFeishuThread
@@ -1446,9 +1447,14 @@ export async function handleFeishuMessage(params: {
           ? normalGroupReplyTargetMessageId
           : defaultReplyTargetMessageId;
     const skipReplyToInMessages = !isGroup && !directThreadReply;
+    const dispatchReplyInThread = directThreadReply
+      ? true
+      : shouldReplyInFeishuThread
+        ? isInboundFeishuThread || replyInThread
+        : false;
     const threadReply = isGroup
       ? shouldReplyInFeishuThread
-        ? (groupSession?.threadReply ?? false)
+        ? isInboundFeishuThread || (groupSession?.threadReply ?? false)
         : false
       : directThreadReply;
     const lastRouteThreadId =
@@ -1574,11 +1580,7 @@ export async function handleFeishuMessage(params: {
               allowReasoningPreview,
               replyToMessageId: replyTargetMessageId,
               skipReplyToInMessages,
-              replyInThread: directThreadReply
-                ? true
-                : shouldReplyInFeishuThread
-                  ? replyInThread
-                  : false,
+              replyInThread: dispatchReplyInThread,
               rootId: ctx.rootId,
               threadReply,
               accountId: account.accountId,
@@ -1754,11 +1756,7 @@ export async function handleFeishuMessage(params: {
           allowReasoningPreview,
           replyToMessageId: replyTargetMessageId,
           skipReplyToInMessages,
-          replyInThread: directThreadReply
-            ? true
-            : shouldReplyInFeishuThread
-              ? replyInThread
-              : false,
+          replyInThread: dispatchReplyInThread,
           rootId: ctx.rootId,
           threadReply,
           accountId: account.accountId,

@@ -253,6 +253,7 @@ describe("Feishu reply fallback for withdrawn/deleted targets", () => {
         content: '{"zh_cn":{"content":[[{"tag":"md","text":"hello"}]]}}',
         msg_type: "post",
         reply_in_thread: true,
+        uuid: expect.any(String),
       },
     });
     expect(createMock).toHaveBeenCalledWith({
@@ -261,6 +262,7 @@ describe("Feishu reply fallback for withdrawn/deleted targets", () => {
         content: '{"zh_cn":{"content":[[{"tag":"md","text":"hello"}]]}}',
         receive_id: "oc_group_1",
         msg_type: "post",
+        uuid: expect.any(String),
       },
     });
   });
