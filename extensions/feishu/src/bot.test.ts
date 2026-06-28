@@ -187,6 +187,7 @@ function createFeishuBotRuntime(overrides: DeepPartial<PluginRuntime> = {}): Plu
         withReplyDispatcher: withReplyDispatcherMock as never,
       },
       commands: {
+        isControlCommandMessage: vi.fn(() => false),
         shouldComputeCommandAuthorized: vi.fn(() => false),
         resolveCommandAuthorizedFromAuthorizers: vi.fn(() => false),
       },
@@ -978,6 +979,9 @@ describe("handleFeishuMessage command authorization", () => {
   );
   const mockResolveCommandAuthorizedFromAuthorizers = vi.fn(() => false);
   const mockShouldComputeCommandAuthorized = vi.fn(() => true);
+  const isKnownTestControlCommand = (text?: string) =>
+    /^\/(?:compact|status|model|models|new|reset|stop)(?:\s|$)/i.test((text ?? "").trim());
+  const mockIsControlCommandMessage = vi.fn(isKnownTestControlCommand);
   const mockReadAllowFromStore = vi.fn().mockResolvedValue([]);
   const mockUpsertPairingRequest = vi.fn().mockResolvedValue({ code: "ABCDEFGH", created: false });
   const mockBuildPairingReply = vi.fn(() => "Pairing response");
@@ -992,6 +996,7 @@ describe("handleFeishuMessage command authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(true);
+    mockIsControlCommandMessage.mockReset().mockImplementation(isKnownTestControlCommand);
     mockGetMessageFeishu.mockReset().mockResolvedValue(null);
     mockListFeishuThreadMessages.mockReset().mockResolvedValue([]);
     mockReadSessionUpdatedAt.mockReturnValue(undefined);
@@ -1035,6 +1040,7 @@ describe("handleFeishuMessage command authorization", () => {
             withReplyDispatcher: mockWithReplyDispatcher as never,
           },
           commands: {
+            isControlCommandMessage: mockIsControlCommandMessage,
             shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized,
             resolveCommandAuthorizedFromAuthorizers: mockResolveCommandAuthorizedFromAuthorizers,
           },
@@ -1641,8 +1647,69 @@ describe("handleFeishuMessage command authorization", () => {
     expect(context.SenderId).toBe("ou-attacker");
   });
 
-  it("normalizes group mention-prefixed slash commands before command-auth probing", async () => {
+  it("normalizes known group mention-prefixed slash commands into text slash turns", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(true);
+    mockResolveCommandAuthorizedFromAuthorizers.mockReturnValue(true);
+
+    const cfg: ClawdbotConfig = {
+      commands: { useAccessGroups: true },
+      channels: {
+        feishu: {
+          allowFrom: ["ou-admin"],
+          groups: {
+            "oc-group": {
+              requireMention: false,
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-admin",
+        },
+      },
+      message: {
+        message_id: "msg-group-mention-command-probe",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "@_user_1/models" }),
+        mentions: [{ key: "@_user_1", id: { open_id: "ou-bot" }, name: "Bot", tenant_key: "" }],
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockShouldComputeCommandAuthorized).toHaveBeenCalledWith("/models", cfg);
+    expect(mockIsControlCommandMessage).toHaveBeenCalledWith("/models", cfg);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    const context = mockCallArg<{
+      ctx: {
+        CommandAuthorized?: boolean;
+        CommandBody?: string;
+        BodyForCommands?: string;
+        CommandTurn?: { kind?: string; source?: string; authorized?: boolean; body?: string };
+      };
+    }>(mockDispatchReplyFromConfig, 0, 0).ctx;
+    expect(context).toMatchObject({
+      CommandAuthorized: true,
+      CommandBody: "/models",
+      BodyForCommands: "/models",
+      CommandTurn: {
+        kind: "text-slash",
+        source: "text",
+        authorized: true,
+        body: "/models",
+      },
+    });
+  });
+
+  it("does not mark unknown leading slash text as a text slash turn", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(true);
+    mockIsControlCommandMessage.mockReturnValue(false);
 
     const cfg: ClawdbotConfig = {
       channels: {
@@ -1663,18 +1730,29 @@ describe("handleFeishuMessage command authorization", () => {
         },
       },
       message: {
-        message_id: "msg-group-mention-command-probe",
+        message_id: "msg-group-unknown-slash",
         chat_id: "oc-group",
         chat_type: "group",
         message_type: "text",
-        content: JSON.stringify({ text: "@_user_1/model" }),
-        mentions: [{ key: "@_user_1", id: { open_id: "ou-bot" }, name: "Bot", tenant_key: "" }],
+        content: JSON.stringify({ text: "/foo" }),
       },
     };
 
     await dispatchMessage({ cfg, event });
 
-    expect(mockShouldComputeCommandAuthorized).toHaveBeenCalledWith("/model", cfg);
+    expect(mockShouldComputeCommandAuthorized).toHaveBeenCalledWith("/foo", cfg);
+    expect(mockIsControlCommandMessage).toHaveBeenCalledWith("/foo", cfg);
+    const context = mockCallArg<{
+      CommandAuthorized?: boolean;
+      CommandBody?: string;
+      BodyForCommands?: string;
+      CommandTurn?: { kind?: string };
+    }>(mockFinalizeInboundContext, 0, 0);
+    expect(context.CommandAuthorized).toBe(false);
+    expect(context.CommandBody).toBe("/foo");
+    expect(context.BodyForCommands).toBe("/foo");
+    expect(context.CommandTurn).toBeUndefined();
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to top-level allowFrom for group command authorization", async () => {

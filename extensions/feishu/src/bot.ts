@@ -1006,10 +1006,14 @@ export async function handleFeishuMessage(params: {
         : isGroup
           ? normalizeFeishuCommandProbeBody(audioTranscript)
           : audioTranscript;
+    const effectiveCommandBody = effectiveCommandProbeBody.trim();
     const shouldComputeEffectiveCommandAuthorized =
       audioTranscript === undefined
         ? shouldComputeCommandAuthorized
         : core.channel.commands.shouldComputeCommandAuthorized(effectiveCommandProbeBody, cfg);
+    const isTextSlashCommandTurn =
+      effectiveCommandBody.startsWith("/") &&
+      core.channel.commands.isControlCommandMessage(effectiveCommandBody, cfg);
     const commandAuthorized = shouldComputeEffectiveCommandAuthorized
       ? isDirect && audioTranscript === undefined && dmIngress
         ? dmIngress.commandAccess.authorized
@@ -1393,8 +1397,15 @@ export async function handleFeishuMessage(params: {
           bodyForAgent: messageBody,
           inboundHistory,
           rawBody: agentFacingContent,
-          commandBody: agentFacingContent,
+          commandBody: isTextSlashCommandTurn ? effectiveCommandBody : agentFacingContent,
         },
+        command: isTextSlashCommandTurn
+          ? {
+              kind: "text-slash",
+              body: effectiveCommandBody,
+              authorized: commandAuthorized === true,
+            }
+          : undefined,
         access: {
           mentions: {
             canDetectMention: isGroup,

@@ -268,6 +268,28 @@ describe("handleModelsCommand", () => {
     expect(authCheckerParams?.workspaceDir).toBe("/tmp");
   });
 
+  it("returns a visible providers reply for authorized text slash turns", async () => {
+    const params = buildParams("/models");
+    Object.assign(params.ctx, {
+      CommandAuthorized: true,
+      CommandBody: "/models",
+      BodyForCommands: "/models",
+      CommandTurn: {
+        kind: "text-slash",
+        source: "text",
+        authorized: true,
+        body: "/models",
+      },
+    });
+
+    const result = await handleModelsCommand(params, true);
+
+    expect(result?.shouldContinue).toBe(false);
+    expect(result?.reply?.text).toContain("Providers:");
+    expect(result?.reply?.text).toContain("- anthropic (2)");
+    expect(result?.reply?.text).toContain("Use: /models <provider>");
+  });
+
   it("uses read-only catalog loading and static auth checks for default browse", async () => {
     await handleModelsCommand(buildParams("/models"), true);
 
