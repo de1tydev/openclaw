@@ -38,6 +38,7 @@ export type FeishuMessageContext = {
   replyTargetMessageId?: string;
   /** True for locally synthesized events created from interactive card actions. */
   syntheticCardAction?: boolean;
+  typingTargetMessageId?: string;
   suppressReplyTarget?: boolean;
   senderId: string;
   senderOpenId: string;
