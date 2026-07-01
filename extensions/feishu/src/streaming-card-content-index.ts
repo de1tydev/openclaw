@@ -16,6 +16,7 @@ type FeishuOutboundCardContentEntry = {
   chatId?: string;
   text: string;
   updatedAt: number;
+  sequence?: number;
 };
 
 type RecordFeishuOutboundCardContentParams = {
@@ -25,6 +26,7 @@ type RecordFeishuOutboundCardContentParams = {
   chatId?: string | null;
   text?: string | null;
   updatedAt?: number;
+  sequence?: number;
   log?: (message: string) => void;
 };
 
@@ -32,6 +34,7 @@ type LookupFeishuOutboundCardContentParams = {
   cardId?: string | null;
   messageId?: string | null;
   accountId?: string | null;
+  chatId?: string | null;
   log?: (message: string) => void;
 };
 
@@ -92,14 +95,30 @@ function pruneMemory(now = Date.now()): void {
   }
 }
 
-function scopedRecordKeys(kind: "card" | "message", id: string, accountId?: string): string[] {
+function scopedRecordKeys(
+  kind: "card" | "message",
+  id: string,
+  accountId?: string,
+  chatId?: string,
+): string[] {
   const account = normalizeOptional(accountId);
-  return [`${kind}:${account ?? "global"}:${id}`];
+  const chat = normalizeOptional(chatId);
+  return chat
+    ? [`${kind}:${account ?? "global"}:chat:${chat}:${id}`]
+    : [`${kind}:${account ?? "global"}:${id}`];
 }
 
-function scopedLookupKeys(kind: "card" | "message", id: string, accountId?: string): string[] {
+function scopedLookupKeys(
+  kind: "card" | "message",
+  id: string,
+  accountId?: string,
+  chatId?: string,
+): string[] {
   const account = normalizeOptional(accountId);
-  return [`${kind}:${account ?? "global"}:${id}`];
+  const chat = normalizeOptional(chatId);
+  const keys = chat ? [`${kind}:${account ?? "global"}:chat:${chat}:${id}`] : [];
+  keys.push(`${kind}:${account ?? "global"}:${id}`);
+  return keys;
 }
 
 function storeKey(rawKey: string): string {
@@ -139,6 +158,40 @@ function readMemory(namespace: string, rawKey: string): FeishuOutboundCardConten
   return undefined;
 }
 
+function isNewerEntry(
+  existing: FeishuOutboundCardContentEntry | undefined,
+  next: FeishuOutboundCardContentEntry,
+): boolean {
+  if (!isFresh(existing)) {
+    return false;
+  }
+  if (
+    typeof existing?.sequence === "number" &&
+    Number.isFinite(existing.sequence) &&
+    typeof next.sequence === "number" &&
+    Number.isFinite(next.sequence) &&
+    existing.sequence > next.sequence
+  ) {
+    return true;
+  }
+  return typeof existing?.updatedAt === "number" && existing.updatedAt > next.updatedAt;
+}
+
+function lookupStoredEntry(
+  namespace: string,
+  rawKey: string,
+): FeishuOutboundCardContentEntry | undefined {
+  const memoryEntry = readMemory(namespace, rawKey);
+  if (memoryEntry) {
+    return memoryEntry;
+  }
+  try {
+    return openStore(namespace).lookup(storeKey(rawKey));
+  } catch {
+    return undefined;
+  }
+}
+
 function recordFeishuCardContent(
   namespace: string,
   params: RecordFeishuOutboundCardContentParams,
@@ -157,11 +210,18 @@ function recordFeishuCardContent(
     chatId: normalizeOptional(params.chatId),
     text,
     updatedAt,
+    ...(typeof params.sequence === "number" && Number.isFinite(params.sequence)
+      ? { sequence: params.sequence }
+      : {}),
   };
   const rawKeys = [
-    ...scopedRecordKeys("message", messageId, entry.accountId),
-    ...(cardId ? scopedRecordKeys("card", cardId, entry.accountId) : []),
+    ...scopedRecordKeys("message", messageId, entry.accountId, entry.chatId),
+    ...(cardId ? scopedRecordKeys("card", cardId, entry.accountId, entry.chatId) : []),
   ];
+
+  if (rawKeys.some((rawKey) => isNewerEntry(lookupStoredEntry(namespace, rawKey), entry))) {
+    return false;
+  }
 
   for (const rawKey of rawKeys) {
     remember(namespace, rawKey, entry);
@@ -199,8 +259,9 @@ function isLookupMatch(params: {
   kind: "card" | "message";
   id: string;
   accountId?: string;
+  chatId?: string;
 }): boolean {
-  const { entry, kind, id, accountId } = params;
+  const { entry, kind, id, accountId, chatId } = params;
   if (kind === "message" && entry.messageId !== id) {
     return false;
   }
@@ -208,13 +269,20 @@ function isLookupMatch(params: {
     return false;
   }
   const entryAccount = normalizeOptional(entry.accountId);
-  return accountId ? entryAccount === accountId : entryAccount === undefined;
+  if (accountId ? entryAccount !== accountId : entryAccount !== undefined) {
+    return false;
+  }
+  const expectedChat = normalizeOptional(chatId);
+  if (!expectedChat) {
+    return true;
+  }
+  return normalizeOptional(entry.chatId) === expectedChat;
 }
 
 function lookupRawKey(
   namespace: string,
   rawKey: string,
-  match: { kind: "card" | "message"; id: string; accountId?: string },
+  match: { kind: "card" | "message"; id: string; accountId?: string; chatId?: string },
   log?: (message: string) => void,
 ): FeishuOutboundCardContentEntry | undefined {
   const memoryEntry = readMemory(namespace, rawKey);
@@ -239,12 +307,13 @@ function lookupFeishuCardContent(
   params: LookupFeishuOutboundCardContentParams,
 ): FeishuOutboundCardContentEntry | undefined {
   const accountId = normalizeOptional(params.accountId);
+  const chatId = normalizeOptional(params.chatId);
   const messageId = normalizeMessageId(params.messageId);
   const cardId = normalizeId(params.cardId);
   const rawKeys: Array<{ rawKey: string; kind: "card" | "message"; id: string }> = [];
   if (messageId) {
     rawKeys.push(
-      ...scopedLookupKeys("message", messageId, accountId).map((rawKey) => ({
+      ...scopedLookupKeys("message", messageId, accountId, chatId).map((rawKey) => ({
         rawKey,
         kind: "message" as const,
         id: messageId,
@@ -253,7 +322,7 @@ function lookupFeishuCardContent(
   }
   if (cardId) {
     rawKeys.push(
-      ...scopedLookupKeys("card", cardId, accountId).map((rawKey) => ({
+      ...scopedLookupKeys("card", cardId, accountId, chatId).map((rawKey) => ({
         rawKey,
         kind: "card" as const,
         id: cardId,
@@ -262,7 +331,7 @@ function lookupFeishuCardContent(
   }
 
   for (const { rawKey, kind, id } of rawKeys) {
-    const entry = lookupRawKey(namespace, rawKey, { kind, id, accountId }, params.log);
+    const entry = lookupRawKey(namespace, rawKey, { kind, id, accountId, chatId }, params.log);
     if (entry?.text.trim()) {
       return entry;
     }
@@ -285,7 +354,12 @@ export function lookupFeishuLegacyStreamingCardContent(
 export function lookupFeishuStreamingCardContent(
   params: LookupFeishuOutboundCardContentParams,
 ): FeishuOutboundCardContentEntry | undefined {
-  return lookupFeishuOutboundCardContent(params) ?? lookupFeishuLegacyStreamingCardContent(params);
+  const legacyParams = normalizeOptional(params.chatId)
+    ? { ...params, cardId: undefined, chatId: undefined }
+    : params;
+  return (
+    lookupFeishuOutboundCardContent(params) ?? lookupFeishuLegacyStreamingCardContent(legacyParams)
+  );
 }
 
 function shouldDeleteEntry(

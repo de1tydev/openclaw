@@ -357,6 +357,7 @@ export class FeishuStreamingSession {
       messageId: sendRes.data.message_id,
       accountId: this.creds.accountId,
       chatId: receiveIdType === "chat_id" ? receiveId : undefined,
+      sequence: this.state.sequence,
       text: "",
       log: this.log,
     });
@@ -508,6 +509,7 @@ export class FeishuStreamingSession {
           messageId: this.state.messageId,
           accountId: this.state.accountId,
           chatId: this.state.chatId,
+          sequence: this.state.sequence,
           text: mergedText,
           log: this.log,
         });
@@ -576,6 +578,7 @@ export class FeishuStreamingSession {
           messageId: this.state.messageId,
           accountId: this.state.accountId,
           chatId: this.state.chatId,
+          sequence: this.state.sequence,
           text,
           log: this.log,
         });
@@ -619,6 +622,7 @@ export class FeishuStreamingSession {
       messageId: finalState.messageId,
       accountId: finalState.accountId,
       chatId: finalState.chatId,
+      sequence: finalState.sequence,
       text: finalState.sentText,
       log: this.log,
     });

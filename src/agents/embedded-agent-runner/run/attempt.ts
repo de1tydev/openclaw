@@ -340,7 +340,6 @@ import {
   createToolResultPromptProjectionState,
   truncateOversizedToolResultsInMessages,
   type ToolResultPromptProjectionState,
-  truncateOversizedToolResultsInSessionManager,
 } from "../tool-result-truncation.js";
 import { splitSdkTools } from "../tool-split.js";
 import { mapThinkingLevel } from "../utils.js";
@@ -3858,24 +3857,20 @@ export async function runEmbeddedAttempt(
             cfg: params.config,
             agentId: sessionAgentId,
           });
-          const truncationResult = truncateOversizedToolResultsInSessionManager({
-            sessionManager: activeSessionManager,
-            contextWindowTokens: contextTokenBudget,
-            maxCharsOverride: toolResultMaxChars,
-            sessionFile: params.sessionFile,
-            sessionId: params.sessionId,
-            sessionKey: params.sessionKey,
-            agentId: sessionAgentId,
-          });
-          if (truncationResult.truncated) {
+          const truncationResult = truncateOversizedToolResultsInMessages(
+            activeSession.messages,
+            contextTokenBudget,
+            toolResultMaxChars,
+            undefined,
+            toolResultPromptProjectionState,
+          );
+          if (truncationResult.truncatedCount > 0) {
             preflightRecovery = {
               route: "truncate_tool_results_only",
               source: "mid-turn",
               handled: true,
               truncatedCount: truncationResult.truncatedCount,
             };
-            const sessionContext = activeSessionManager.buildSessionContext();
-            activeSession.agent.state.messages = sessionContext.messages;
             logMidTurnPrecheck(
               request.route,
               `handled=true truncatedCount=${truncationResult.truncatedCount}`,
@@ -3886,7 +3881,7 @@ export async function runEmbeddedAttempt(
             promptErrorSource = "precheck";
             logMidTurnPrecheck(
               "compact_only",
-              `truncateFallbackReason=${truncationResult.reason ?? "unknown"}`,
+              `truncateFallbackReason=no oversized or aggregate tool results`,
             );
           }
         } else {
@@ -4181,20 +4176,6 @@ export async function runEmbeddedAttempt(
           });
           const promptToolResultAggregateMaxChars =
             promptToolResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER;
-          const persistedToolResultTruncation = truncateOversizedToolResultsInSessionManager({
-            sessionManager: activeSessionManager,
-            contextWindowTokens: contextTokenBudget,
-            maxCharsOverride: promptToolResultMaxChars,
-            aggregateMaxCharsOverride: promptToolResultAggregateMaxChars,
-            sessionFile: params.sessionFile,
-            sessionId: params.sessionId,
-            sessionKey: params.sessionKey,
-            agentId: sessionAgentId,
-          });
-          if (persistedToolResultTruncation.truncated) {
-            const sessionContext = activeSessionManager.buildSessionContext();
-            activeSession.agent.state.messages = sessionContext.messages;
-          }
           let promptHistoryMessages = activeSession.messages;
           const promptToolResultTruncation = truncateOversizedToolResultsInMessages(
             activeSession.messages,
@@ -4204,8 +4185,7 @@ export async function runEmbeddedAttempt(
             toolResultPromptProjectionState,
           );
           if (promptToolResultTruncation.messages !== activeSession.messages) {
-            activeSession.agent.state.messages = promptToolResultTruncation.messages;
-            promptHistoryMessages = activeSession.messages;
+            promptHistoryMessages = promptToolResultTruncation.messages;
             log.info(
               `[tool-result-truncation] Truncated ${promptToolResultTruncation.truncatedCount} ` +
                 `tool result(s) for prompt history ` +
@@ -4667,18 +4647,17 @@ export async function runEmbeddedAttempt(
               cfg: params.config,
               agentId: sessionAgentId,
             });
-            const truncationResult = await withOwnedSessionWriteLock(() =>
-              truncateOversizedToolResultsInSessionManager({
-                sessionManager: activeSessionManager,
-                contextWindowTokens: contextTokenBudget,
-                maxCharsOverride: toolResultMaxChars,
-                sessionFile: params.sessionFile,
-                sessionId: params.sessionId,
-                sessionKey: params.sessionKey,
-                agentId: sessionAgentId,
-              }),
+            const truncationResult = truncateOversizedToolResultsInMessages(
+              hookMessagesForCurrentPrompt,
+              contextTokenBudget,
+              toolResultMaxChars,
+              undefined,
+              toolResultPromptProjectionState,
             );
-            if (truncationResult.truncated) {
+            if (
+              truncationResult.truncatedCount > 0 ||
+              preemptiveCompaction.toolResultReducibleChars > 0
+            ) {
               preflightRecovery = {
                 route: "truncate_tool_results_only",
                 handled: true,
@@ -4695,18 +4674,22 @@ export async function runEmbeddedAttempt(
                   `effectiveReserveTokens=${preemptiveCompaction.effectiveReserveTokens} ` +
                   `sessionFile=${params.sessionFile}`,
               );
-              skipPromptSubmission = true;
             }
             if (!skipPromptSubmission) {
-              log.warn(
-                `[context-overflow-precheck] early tool-result truncation did not help for ` +
-                  `${params.provider}/${params.modelId}; falling back to compaction ` +
-                  `reason=${truncationResult.reason ?? "unknown"} sessionFile=${params.sessionFile}`,
-              );
-              preflightRecovery = { route: "compact_only" };
-              promptError = new Error(PREEMPTIVE_OVERFLOW_ERROR_TEXT);
-              promptErrorSource = "precheck";
-              skipPromptSubmission = true;
+              if (
+                truncationResult.truncatedCount <= 0 &&
+                preemptiveCompaction.toolResultReducibleChars <= 0
+              ) {
+                log.warn(
+                  `[context-overflow-precheck] early tool-result prompt projection did not help for ` +
+                    `${params.provider}/${params.modelId}; falling back to compaction ` +
+                    `reason=no oversized or aggregate tool results sessionFile=${params.sessionFile}`,
+                );
+                preflightRecovery = { route: "compact_only" };
+                promptError = new Error(PREEMPTIVE_OVERFLOW_ERROR_TEXT);
+                promptErrorSource = "precheck";
+                skipPromptSubmission = true;
+              }
             }
           }
           if (preemptiveCompaction?.shouldCompact) {
@@ -4752,9 +4735,6 @@ export async function runEmbeddedAttempt(
                   );
                   if (providerPromptHistoryTruncation.messages === messages) {
                     return messages;
-                  }
-                  if (messages === activeSession.messages) {
-                    activeSession.agent.state.messages = providerPromptHistoryTruncation.messages;
                   }
                   return providerPromptHistoryTruncation.messages;
                 },

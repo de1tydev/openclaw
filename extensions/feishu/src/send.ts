@@ -1,5 +1,6 @@
 // Feishu plugin module implements send behavior.
 import { randomUUID } from "node:crypto";
+import { OutboundDeliveryError } from "openclaw/plugin-sdk/channel-outbound";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import {
@@ -516,6 +517,7 @@ function logInteractiveCardHydrationMiss(context: {
   messageId?: string;
   cardId?: string;
   accountId?: string;
+  chatId?: string;
 }): void {
   try {
     getFeishuRuntime()
@@ -528,6 +530,7 @@ function logInteractiveCardHydrationMiss(context: {
         messageId: context.messageId,
         cardId: context.cardId,
         accountId: context.accountId,
+        chatId: context.chatId,
       });
   } catch {
     // Quoted-message parsing must stay best-effort when runtime logging is unavailable.
@@ -536,7 +539,7 @@ function logInteractiveCardHydrationMiss(context: {
 
 function hydrateInteractiveCardContent(
   parsedContent: ParsedInteractiveCardContent,
-  context: { messageId?: string; accountId?: string },
+  context: { messageId?: string; accountId?: string; chatId?: string },
 ): string {
   if (!parsedContent.fallbackKind) {
     return parsedContent.text;
@@ -545,6 +548,7 @@ function hydrateInteractiveCardContent(
     cardId: parsedContent.cardId,
     messageId: context.messageId,
     accountId: context.accountId,
+    chatId: context.chatId,
   });
   if (indexed?.text.trim()) {
     return indexed.text;
@@ -554,6 +558,7 @@ function hydrateInteractiveCardContent(
     messageId: context.messageId,
     cardId: parsedContent.cardId,
     accountId: context.accountId,
+    chatId: context.chatId,
   });
   return INTERACTIVE_CARD_FALLBACK_TEXT;
 }
@@ -561,7 +566,7 @@ function hydrateInteractiveCardContent(
 function parseFeishuMessageContent(
   rawContent: string,
   msgType: string,
-  context: { messageId?: string; accountId?: string } = {},
+  context: { messageId?: string; accountId?: string; chatId?: string } = {},
 ): string {
   if (!rawContent) {
     return "";
@@ -611,10 +616,11 @@ function parseFeishuMessageItem(
   const msgType = item.msg_type ?? "text";
   const rawContent = item.body?.content ?? "";
   const messageId = item.message_id ?? fallbackMessageId ?? "";
+  const chatId = item.chat_id ?? "";
 
   return {
     messageId,
-    chatId: item.chat_id ?? "",
+    chatId,
     chatType:
       item.chat_type === "group" ||
       item.chat_type === "topic_group" ||
@@ -628,6 +634,7 @@ function parseFeishuMessageItem(
     content: parseFeishuMessageContent(rawContent, msgType, {
       messageId,
       accountId: options.accountId,
+      chatId,
     }),
     rawContent,
     contentType: msgType,
@@ -932,10 +939,11 @@ export async function editMessageFeishu(params: {
   text?: string;
   card?: Record<string, unknown>;
   accountId?: string;
+  chatId?: string;
   /** Explicit display/source text safe to recover for edited interactive cards. */
   recoverableText?: string;
 }): Promise<{ messageId: string; contentType: "post" | "interactive" }> {
-  const { cfg, messageId, text, card, accountId, recoverableText } = params;
+  const { cfg, messageId, text, card, accountId, chatId, recoverableText } = params;
   const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
@@ -964,6 +972,7 @@ export async function editMessageFeishu(params: {
       recordFeishuOutboundCardContent({
         messageId,
         accountId: account.accountId,
+        chatId,
         text: recoverableText,
       });
     } else {
@@ -999,10 +1008,11 @@ export async function updateCardFeishu(params: {
   messageId: string;
   card: Record<string, unknown>;
   accountId?: string;
+  chatId?: string;
   /** Explicit display/source text safe to recover for updated interactive cards. */
   recoverableText?: string;
 }): Promise<void> {
-  const { cfg, messageId, card, accountId, recoverableText } = params;
+  const { cfg, messageId, card, accountId, chatId, recoverableText } = params;
   const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
@@ -1024,6 +1034,7 @@ export async function updateCardFeishu(params: {
     recordFeishuOutboundCardContent({
       messageId,
       accountId: account.accountId,
+      chatId,
       text: recoverableText,
     });
   } else {
@@ -1117,6 +1128,7 @@ async function sendNativeMarkdownTableCardsFeishu(params: {
 
   let sentAny = false;
   let lastResult: FeishuSendResult | null = null;
+  const sentResults: FeishuSendResult[] = [];
   try {
     for (const card of cards) {
       lastResult = await sendCardFeishu({
@@ -1129,11 +1141,21 @@ async function sendNativeMarkdownTableCardsFeishu(params: {
         accountId: params.accountId,
         recoverableText: card.recoverableText,
       });
+      sentResults.push(lastResult);
       sentAny = true;
     }
   } catch (err) {
     if (sentAny) {
-      throw err;
+      throw new OutboundDeliveryError("Feishu native table card send partially failed", {
+        cause: err,
+        results: sentResults.map((result) => ({
+          channel: "feishu" as const,
+          messageId: result.messageId,
+          chatId: result.chatId,
+          receipt: result.receipt,
+        })),
+        stage: "platform_send",
+      });
     }
     return sendMessageFeishu({
       cfg: params.cfg,

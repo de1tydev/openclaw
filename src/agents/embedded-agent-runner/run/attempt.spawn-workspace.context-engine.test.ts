@@ -2961,11 +2961,19 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
     expect(JSON.stringify(submittedCurrentPromptMessages)).toContain("truncated");
     expect(afterTurn).toHaveBeenCalledTimes(1);
     const afterTurnCurrentPromptMessages = afterTurnMessages.slice(sessionMessages.length);
+    expect(sumToolResultTextChars(afterTurnMessages)).toBeGreaterThan(
+      sumToolResultTextChars(submittedMessages),
+    );
     expect(
-      afterTurnMessages
+      submittedMessages
         .filter((message) => message.role === "toolResult")
         .every((message) => sumToolResultTextChars([message]) <= 2_000),
     ).toBe(true);
-    expect(JSON.stringify(afterTurnCurrentPromptMessages)).toContain("truncated");
+    expect(
+      afterTurnCurrentPromptMessages
+        .filter((message) => message.role === "toolResult")
+        .some((message) => sumToolResultTextChars([message]) > 2_000),
+    ).toBe(true);
+    expect(JSON.stringify(afterTurnCurrentPromptMessages)).not.toContain("truncated");
   });
 });

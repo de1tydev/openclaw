@@ -19,10 +19,20 @@ import {
   FEISHU_APPROVAL_REQUEST_ACTION,
 } from "./card-ux-approval.js";
 
+const feishuAccountMockState = vi.hoisted(() => ({
+  config: {} as Record<string, unknown>,
+}));
+
 // Mock account resolution
 vi.mock("./accounts.js", () => ({
-  resolveFeishuAccount: vi.fn().mockReturnValue({ accountId: "mock-account" }),
-  resolveFeishuRuntimeAccount: vi.fn().mockReturnValue({ accountId: "mock-account" }),
+  resolveFeishuAccount: vi.fn().mockImplementation(() => ({
+    accountId: "mock-account",
+    config: feishuAccountMockState.config,
+  })),
+  resolveFeishuRuntimeAccount: vi.fn().mockImplementation(() => ({
+    accountId: "mock-account",
+    config: feishuAccountMockState.config,
+  })),
 }));
 
 // Mock bot.js to verify handleFeishuMessage call
@@ -111,6 +121,7 @@ describe("Feishu Card Action Handler", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    feishuAccountMockState.config = {};
     createFeishuClientMock.mockReset().mockReturnValue({
       im: {
         chat: {
@@ -231,12 +242,15 @@ describe("Feishu Card Action Handler", () => {
   });
 
   it("routes plugin approval command actions through the synthetic command path", async () => {
+    feishuAccountMockState.config = { allowFrom: ["user:ou_approver"] };
     const event = createCardActionEvent({
       token: "tok-plugin-approval",
+      openId: "ou_approver",
       actionValue: createFeishuCardInteractionEnvelope({
         k: "plugin_approval",
         a: "feishu.plugin_approval.confirm",
         q: "/approve plugin:test-123 allow-once",
+        m: { approvalId: "plugin:test-123", allowedDecisions: "allow-once,deny" },
         c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
       }),
     });
@@ -247,6 +261,105 @@ describe("Feishu Card Action Handler", () => {
     expect(message.chat_id).toBe("chat1");
     expect(message.content).toBe('{"text":"/approve plugin:test-123 allow-once"}');
     expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects group plugin approval clicks from non-approvers", async () => {
+    feishuAccountMockState.config = { allowFrom: ["user:ou_approver"] };
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval-non-approver",
+      openId: "ou_intruder",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test-123 allow-once",
+        m: { approvalId: "plugin:test-123", allowedDecisions: "allow-once,deny" },
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    expect(handleFeishuMessage).not.toHaveBeenCalled();
+    expect(String(sendMessageCall().text)).toContain("not authorized");
+  });
+
+  it("rejects unbound group plugin approval clicks when approver allowlist is empty", async () => {
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval-empty-allowlist",
+      openId: "ou_anyone",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test-123 allow-once",
+        m: { approvalId: "plugin:test-123", allowedDecisions: "allow-once,deny" },
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    expect(handleFeishuMessage).not.toHaveBeenCalled();
+    expect(String(sendMessageCall().text)).toContain("not authorized");
+  });
+
+  it("rejects plugin approval actions when approval id metadata is tampered", async () => {
+    feishuAccountMockState.config = { allowFrom: ["user:ou_approver"] };
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval-id-mismatch",
+      openId: "ou_approver",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test-123 allow-once",
+        m: { approvalId: "plugin:other", allowedDecisions: "allow-once,deny" },
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    expect(handleFeishuMessage).not.toHaveBeenCalled();
+    expect(String(sendMessageCall().text)).toContain("payload is invalid");
+  });
+
+  it("rejects plugin approval decisions outside the card metadata", async () => {
+    feishuAccountMockState.config = { allowFrom: ["user:ou_approver"] };
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval-decision-mismatch",
+      openId: "ou_approver",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test-123 allow-always",
+        m: { approvalId: "plugin:test-123", allowedDecisions: "allow-once,deny" },
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    expect(handleFeishuMessage).not.toHaveBeenCalled();
+    expect(String(sendMessageCall().text)).toContain("payload is invalid");
+  });
+
+  it("rejects plugin approval actions with invalid allowed decision metadata", async () => {
+    feishuAccountMockState.config = { allowFrom: ["user:ou_approver"] };
+    const event = createCardActionEvent({
+      token: "tok-plugin-approval-invalid-decisions",
+      openId: "ou_approver",
+      actionValue: createFeishuCardInteractionEnvelope({
+        k: "plugin_approval",
+        a: "feishu.plugin_approval.confirm",
+        q: "/approve plugin:test-123 allow-once",
+        m: { approvalId: "plugin:test-123", allowedDecisions: "approve-everything" },
+        c: { h: "chat1", t: "group", e: Date.now() + 60_000 },
+      }),
+    });
+
+    await handleFeishuCardAction({ cfg, event, runtime });
+
+    expect(handleFeishuMessage).not.toHaveBeenCalled();
+    expect(String(sendMessageCall().text)).toContain("payload is invalid");
   });
 
   it("rejects plugin approval actions that do not dispatch /approve", async () => {

@@ -1,3 +1,4 @@
+import { isImplicitSameChatApprovalAuthorization } from "openclaw/plugin-sdk/approval-auth-runtime";
 // Feishu plugin module implements card action behavior.
 import {
   asDateTimestampMs,
@@ -6,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
+import { feishuApprovalAuth } from "./approval-auth.js";
 import { handleFeishuMessage, type FeishuMessageEvent } from "./bot.js";
 import { decodeFeishuCardAction, buildFeishuCardActionTextFallback } from "./card-interaction.js";
 import {
@@ -139,9 +141,8 @@ function buildSyntheticMessageEvent(
   // card-action-c-* IDs are temporary callback tokens, not valid Feishu message IDs.
   // Using them as reply targets causes "Invalid ids" errors from the streaming reply API.
   const isTemporaryCardActionId = replyTargetMessageId?.startsWith("card-action-c-");
-  const validReplyTargetId = replyTargetMessageId && !isTemporaryCardActionId
-    ? replyTargetMessageId
-    : undefined;
+  const validReplyTargetId =
+    replyTargetMessageId && !isTemporaryCardActionId ? replyTargetMessageId : undefined;
   return {
     sender: {
       sender_id: {
@@ -328,7 +329,7 @@ async function resolveCardActionChatType(params: {
 async function sendInvalidInteractionNotice(params: {
   cfg: ClawdbotConfig;
   event: FeishuCardActionEvent;
-  reason: "malformed" | "stale" | "wrong_user" | "wrong_conversation";
+  reason: "malformed" | "stale" | "wrong_user" | "wrong_conversation" | "unauthorized";
   accountId?: string;
 }): Promise<void> {
   const reasonText =
@@ -338,7 +339,9 @@ async function sendInvalidInteractionNotice(params: {
         ? "This card action belongs to a different user."
         : params.reason === "wrong_conversation"
           ? "This card action belongs to a different conversation."
-          : "This card action payload is invalid.";
+          : params.reason === "unauthorized"
+            ? "You are not authorized to approve this request from this card."
+            : "This card action payload is invalid.";
 
   await sendMessageFeishu({
     cfg: params.cfg,
@@ -346,6 +349,49 @@ async function sendInvalidInteractionNotice(params: {
     text: `⚠️ ${reasonText}`,
     accountId: params.accountId,
   });
+}
+
+type PluginApprovalDecision = "allow-once" | "allow-always" | "deny";
+
+function isPluginApprovalDecision(value: string): value is PluginApprovalDecision {
+  return value === "allow-once" || value === "allow-always" || value === "deny";
+}
+
+function parsePluginApprovalCommand(command: string): {
+  approvalId: string;
+  decision: PluginApprovalDecision;
+} | null {
+  const match = /^\/approve\s+(\S+)\s+(\S+)$/.exec(command.trim());
+  if (!match) {
+    return null;
+  }
+  const [, approvalId, decision] = match;
+  if (!approvalId || !isPluginApprovalDecision(decision)) {
+    return null;
+  }
+  return { approvalId, decision };
+}
+
+function parseAllowedPluginApprovalDecisions(
+  value: unknown,
+):
+  | { specified: false; decisions: null }
+  | { specified: true; decisions: Set<PluginApprovalDecision> }
+  | null {
+  if (value === undefined || value === null || value === "") {
+    return { specified: false, decisions: null };
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  const decisions = new Set<PluginApprovalDecision>();
+  for (const item of value.split(",")) {
+    const decision = item.trim();
+    if (isPluginApprovalDecision(decision)) {
+      decisions.add(decision);
+    }
+  }
+  return decisions.size > 0 ? { specified: true, decisions } : null;
 }
 
 export async function handleFeishuCardAction(params: {
@@ -476,6 +522,56 @@ export async function handleFeishuCardAction(params: {
           completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
           return;
         }
+        let dispatchChatType = envelope.c?.t;
+        if (envelope.k === "plugin_approval") {
+          const parsed = parsePluginApprovalCommand(command);
+          const expectedApprovalId =
+            typeof envelope.m?.approvalId === "string" ? envelope.m.approvalId.trim() : "";
+          const allowedDecisionMetadata = parseAllowedPluginApprovalDecisions(
+            envelope.m?.allowedDecisions,
+          );
+          if (
+            !parsed ||
+            !allowedDecisionMetadata ||
+            (expectedApprovalId && parsed.approvalId !== expectedApprovalId) ||
+            (allowedDecisionMetadata.specified &&
+              !allowedDecisionMetadata.decisions.has(parsed.decision))
+          ) {
+            await sendInvalidInteractionNotice({
+              cfg,
+              event,
+              reason: "malformed",
+              accountId,
+            });
+            completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
+            return;
+          }
+          dispatchChatType = await resolveCardActionChatType({
+            event,
+            account,
+            chatType: envelope.c?.t,
+            log,
+          });
+          if (dispatchChatType === "group" && !envelope.c?.u?.trim()) {
+            const auth = feishuApprovalAuth.authorizeActorAction({
+              cfg,
+              accountId: account.accountId,
+              senderId: event.operator.open_id,
+              action: "approve",
+              approvalKind: "plugin",
+            });
+            if (!auth.authorized || isImplicitSameChatApprovalAuthorization(auth)) {
+              await sendInvalidInteractionNotice({
+                cfg,
+                event,
+                reason: "unauthorized",
+                accountId,
+              });
+              completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
+              return;
+            }
+          }
+        }
         await dispatchSyntheticCommand({
           cfg,
           event,
@@ -485,7 +581,7 @@ export async function handleFeishuCardAction(params: {
           runtime,
           channelRuntime: params.channelRuntime,
           accountId,
-          chatType: envelope.c?.t,
+          chatType: dispatchChatType,
         });
         completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
         return;

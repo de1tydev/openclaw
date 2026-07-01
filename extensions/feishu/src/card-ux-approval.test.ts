@@ -1,9 +1,6 @@
 // Feishu tests cover plugin approval card ux behavior.
 import { describe, expect, it } from "vitest";
-import {
-  createPluginApprovalCard,
-  feishuPluginApprovalRender,
-} from "./card-ux-approval.js";
+import { createPluginApprovalCard, feishuPluginApprovalRender } from "./card-ux-approval.js";
 
 describe("createPluginApprovalCard", () => {
   const baseParams = {
@@ -27,9 +24,7 @@ describe("createPluginApprovalCard", () => {
     expect((card.config as Record<string, unknown>).width_mode).toBe("fill");
 
     const header = card.header as Record<string, unknown>;
-    expect((header.title as Record<string, unknown>).content).toContain(
-      "Plugin approval required",
-    );
+    expect((header.title as Record<string, unknown>).content).toContain("Plugin approval required");
     expect(header.template).toBe("orange");
 
     const body = card.body as Record<string, unknown>;
@@ -43,7 +38,7 @@ describe("createPluginApprovalCard", () => {
     const card = createPluginApprovalCard(baseParams);
     const body = card.body as Record<string, unknown>;
     const elements = body.elements as Array<Record<string, unknown>>;
-    const md = (elements[0].content as string);
+    const md = elements[0].content as string;
 
     expect(md).toContain("**Apply workspace skill proposal**");
     expect(md).toContain("Apply a pending workspace skill proposal into live workspace skills.");
@@ -67,12 +62,27 @@ describe("createPluginApprovalCard", () => {
     const approveValue = approveAction!.value as Record<string, unknown>;
     expect(approveValue.q).toBe("/approve plugin:test-123 allow-once");
     expect(approveValue.k).toBe("plugin_approval");
+    expect(approveValue.m).toEqual({
+      approvalId: "plugin:test-123",
+      allowedDecisions: "allow-once,deny",
+    });
+    expect(approveValue.c).toEqual(
+      expect.objectContaining({
+        h: "oc_test123",
+        s: "agent:saber-cn:feishu:direct:ou_test",
+        t: "p2p",
+      }),
+    );
 
     const rejectAction = actions.find((a) => a.type === "danger");
     expect(rejectAction).toBeDefined();
     const rejectValue = rejectAction!.value as Record<string, unknown>;
     expect(rejectValue.q).toBe("/approve plugin:test-123 deny");
     expect(rejectValue.k).toBe("plugin_approval");
+    expect(rejectValue.m).toEqual({
+      approvalId: "plugin:test-123",
+      allowedDecisions: "allow-once,deny",
+    });
   });
 
   it("handles allow-once and allow-always as separate buttons", () => {
@@ -82,7 +92,7 @@ describe("createPluginApprovalCard", () => {
     });
     const body = card.body as Record<string, unknown>;
     const elements = body.elements as Array<Record<string, unknown>>;
-    const actions = (elements[1].actions as Array<Record<string, unknown>>);
+    const actions = elements[1].actions as Array<Record<string, unknown>>;
 
     const approveOnce = actions.find(
       (a) => (a.value as Record<string, unknown>).q === "/approve plugin:test-123 allow-once",
@@ -93,8 +103,7 @@ describe("createPluginApprovalCard", () => {
     );
 
     const approveAlways = actions.find(
-      (a) =>
-        (a.value as Record<string, unknown>).q === "/approve plugin:test-123 allow-always",
+      (a) => (a.value as Record<string, unknown>).q === "/approve plugin:test-123 allow-always",
     );
     expect(approveAlways).toBeDefined();
 
@@ -117,7 +126,7 @@ describe("createPluginApprovalCard", () => {
       allowedDecisions: ["allow-once", "deny"] as const,
     });
     const body = card.body as Record<string, unknown>;
-    const md = ((body.elements as Array<Record<string, unknown>>)[0].content as string);
+    const md = (body.elements as Array<Record<string, unknown>>)[0].content as string;
     expect(md).not.toContain("Tool:");
     expect(md).not.toContain("Plugin:");
     expect(md).not.toContain("Agent:");
@@ -131,7 +140,7 @@ describe("createPluginApprovalCard", () => {
       expiresAtMs: 1_060_000,
     });
     const body = card.body as Record<string, unknown>;
-    const md = ((body.elements as Array<Record<string, unknown>>)[0].content as string);
+    const md = (body.elements as Array<Record<string, unknown>>)[0].content as string;
     expect(md).toContain("Expires in: 60s");
   });
 
@@ -142,7 +151,7 @@ describe("createPluginApprovalCard", () => {
       expiresAtMs: 1_000_000,
     });
     const body = card.body as Record<string, unknown>;
-    const md = ((body.elements as Array<Record<string, unknown>>)[0].content as string);
+    const md = (body.elements as Array<Record<string, unknown>>)[0].content as string;
     expect(md).toContain("Expires in: 0s");
   });
 });
@@ -183,6 +192,82 @@ describe("feishuPluginApprovalRender", () => {
     expect((card.header as Record<string, unknown>).template).toBe("orange");
   });
 
+  it("binds pending cards to Feishu chat targets", () => {
+    const request = {
+      id: "plugin:group-target",
+      request: {
+        title: "Test render",
+        description: "Render test",
+        allowedDecisions: ["allow-once", "deny"] as const,
+      },
+      createdAtMs: Date.now() - 5000,
+      expiresAtMs: Date.now() + 115_000,
+    };
+
+    const payload = feishuPluginApprovalRender.buildPendingPayload({
+      cfg: {} as any,
+      request,
+      target: { channel: "feishu", to: "chat:oc_group_1" },
+      nowMs: Date.now(),
+    });
+    const feishuData = (payload.channelData as Record<string, unknown>).feishu as
+      | Record<string, unknown>
+      | undefined;
+    const card = feishuData?.card as Record<string, unknown>;
+    const body = card.body as Record<string, unknown>;
+    const actions = (body.elements as Array<Record<string, unknown>>)[1].actions as Array<
+      Record<string, unknown>
+    >;
+    const approveValue = actions.find((a) => a.type === "primary")!.value as Record<
+      string,
+      unknown
+    >;
+    expect(approveValue.c).toEqual(
+      expect.objectContaining({
+        h: "oc_group_1",
+        t: "group",
+      }),
+    );
+  });
+
+  it("binds pending cards to Feishu open_id DM targets", () => {
+    const request = {
+      id: "plugin:dm-target",
+      request: {
+        title: "Test render",
+        description: "Render test",
+        allowedDecisions: ["allow-once"] as const,
+      },
+      createdAtMs: Date.now() - 5000,
+      expiresAtMs: Date.now() + 115_000,
+    };
+
+    const payload = feishuPluginApprovalRender.buildPendingPayload({
+      cfg: {} as any,
+      request,
+      target: { channel: "feishu", to: "user:ou_owner" },
+      nowMs: Date.now(),
+    });
+    const feishuData = (payload.channelData as Record<string, unknown>).feishu as
+      | Record<string, unknown>
+      | undefined;
+    const card = feishuData?.card as Record<string, unknown>;
+    const body = card.body as Record<string, unknown>;
+    const actions = (body.elements as Array<Record<string, unknown>>)[1].actions as Array<
+      Record<string, unknown>
+    >;
+    const approveValue = actions.find((a) => a.type === "primary")!.value as Record<
+      string,
+      unknown
+    >;
+    expect(approveValue.c).toEqual(
+      expect.objectContaining({
+        u: "ou_owner",
+        t: "p2p",
+      }),
+    );
+  });
+
   it("buildResolvedPayload returns a text ReplyPayload", () => {
     const resolved = {
       id: "plugin:resolve-test",
@@ -216,19 +301,19 @@ describe("button value encode/decode round-trip", () => {
     });
 
     const body = card.body as Record<string, unknown>;
-    const actions = ((body.elements as Array<Record<string, unknown>>)[1]
-      .actions as Array<Record<string, unknown>>);
-    const approveValue = actions.find(
-      (a) => a.type === "primary",
-    )!.value as Record<string, unknown>;
+    const actions = (body.elements as Array<Record<string, unknown>>)[1].actions as Array<
+      Record<string, unknown>
+    >;
+    const approveValue = actions.find((a) => a.type === "primary")!.value as Record<
+      string,
+      unknown
+    >;
 
     // Simulate what dispatchSyntheticCommand would see
     const command = approveValue.q as string;
     expect(command).toBe("/approve plugin:roundtrip allow-once");
 
-    const rejectValue = actions.find(
-      (a) => a.type === "danger",
-    )!.value as Record<string, unknown>;
+    const rejectValue = actions.find((a) => a.type === "danger")!.value as Record<string, unknown>;
     const rejectCommand = rejectValue.q as string;
     expect(rejectCommand).toBe("/approve plugin:roundtrip deny");
   });

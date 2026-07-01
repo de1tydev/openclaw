@@ -610,6 +610,80 @@ describe("truncateOversizedToolResultsInMessages", () => {
     ).toBeLessThan(15_000);
   });
 
+  it("reuses prompt projections for Codex protocol toolResult blocks", () => {
+    const projectionState = createToolResultPromptProjectionState();
+    const source = makeToolResult("x".repeat(15_000), "protocol_call");
+    source.content = [
+      {
+        type: "toolResult",
+        toolUseId: "protocol_call",
+        text: "x".repeat(15_000),
+      },
+    ] as never;
+
+    const first = truncateOversizedToolResultsInMessages(
+      [source],
+      128_000,
+      12_000,
+      12_000,
+      projectionState,
+    );
+    const second = truncateOversizedToolResultsInMessages(
+      [source],
+      128_000,
+      20_000,
+      20_000,
+      projectionState,
+    );
+
+    expect(first.truncatedCount).toBe(1);
+    expect(second.truncatedCount).toBe(0);
+    expect(getToolResultTextLength(second.messages[0] as AgentMessage)).toBeLessThan(15_000);
+    expect(second.messages[0]).toEqual(first.messages[0]);
+    expect(getToolResultTextLength(source as AgentMessage)).toBe(15_000);
+  });
+
+  it("clears Codex protocol toolResult blocks when aggregate recovery needs empty text", () => {
+    const protocolToolResult = (toolCallId: string, text: string): ToolResultMessage =>
+      ({
+        role: "toolResult",
+        toolCallId,
+        toolName: "read",
+        content: [
+          {
+            type: "toolResult",
+            toolUseId: toolCallId,
+            text,
+            content: text,
+          },
+        ],
+        isError: false,
+        timestamp: nextTimestamp(),
+      }) as never;
+    const result = truncateOversizedToolResultsInMessages(
+      [
+        protocolToolResult("protocol_1", "a".repeat(100)),
+        protocolToolResult("protocol_2", "b".repeat(100)),
+        protocolToolResult("protocol_3", "c".repeat(100)),
+      ],
+      128_000,
+      200,
+      1,
+    );
+    const lengths = result.messages.map((message) => getToolResultTextLength(message));
+
+    expect(result.truncatedCount).toBeGreaterThan(0);
+    expect(lengths.some((length) => length === 0)).toBe(true);
+    const cleared = result.messages.find((message) => getToolResultTextLength(message) === 0);
+    expect(cleared?.role).toBe("toolResult");
+    const block =
+      cleared?.role === "toolResult" && Array.isArray(cleared.content)
+        ? (cleared.content[0] as { text?: unknown; content?: unknown } | undefined)
+        : undefined;
+    expect(block?.text).toBe("");
+    expect(block?.content).toBe("");
+  });
+
   it("does not reuse ambiguous projections across filtered history", () => {
     const projectionState = createToolResultPromptProjectionState();
     const duplicate = (text: string) => ({

@@ -548,26 +548,19 @@ function mergeProjectedToolResultMessage(
     return projectedMessage;
   }
   const projectedText = projectedContent.filter(
-    (block): block is { type: "text"; text: string } =>
-      Boolean(block) &&
-      typeof block === "object" &&
-      (block as { type?: unknown }).type === "text" &&
-      typeof (block as { text?: unknown }).text === "string",
+    (block): block is { type: "text" | "toolResult"; text: string } => isToolResultTextBlock(block),
   );
   const currentText = getToolResultTextBlocks(message);
   if (sourceText && currentText.some((text, index) => text !== sourceText[index])) {
     return message;
   }
-  const currentTextCount = currentContent.filter(
-    (block) =>
-      Boolean(block) && typeof block === "object" && (block as { type?: unknown }).type === "text",
-  ).length;
+  const currentTextCount = currentContent.filter(isToolResultTextBlock).length;
   if (currentTextCount !== projectedText.length) {
     return message;
   }
   let textIndex = 0;
   const mergedContent = currentContent.map((block) => {
-    if (!block || typeof block !== "object" || (block as { type?: unknown }).type !== "text") {
+    if (!isToolResultTextBlock(block)) {
       return block;
     }
     const projectedBlock = projectedText[textIndex++];
@@ -581,15 +574,7 @@ function getToolResultTextBlocks(message: AgentMessage): string[] {
   if (!Array.isArray(content)) {
     return [];
   }
-  return content.flatMap((block) =>
-    block && typeof block === "object" && (block as { type?: unknown }).type === "text"
-      ? [
-          typeof (block as { text?: unknown }).text === "string"
-            ? (block as { text: string }).text
-            : "",
-        ]
-      : [],
-  );
+  return content.flatMap((block) => (isToolResultTextBlock(block) ? [block.text] : []));
 }
 
 function buildAggregateToolResultReplacements(params: {
@@ -712,8 +697,13 @@ function clearToolResultText(message: AgentMessage): AgentMessage {
   return {
     ...message,
     content: content.map((block) =>
-      block && typeof block === "object" && (block as { type?: unknown }).type === "text"
-        ? Object.assign({}, block, { text: "" })
+      isToolResultTextBlock(block)
+        ? Object.assign(
+            {},
+            block,
+            { text: "" },
+            typeof block.content === "string" ? { content: "" } : {},
+          )
         : block,
     ),
   } as AgentMessage;

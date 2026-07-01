@@ -69,6 +69,11 @@ export {
   type OutboundSessionContext,
 } from "../infra/outbound/session-context.js";
 export type { OutboundDeliveryFormattingOptions } from "../infra/outbound/formatting.js";
+export { OutboundDeliveryError } from "../infra/outbound/deliver-types.js";
+export type {
+  OutboundDeliveryResult,
+  OutboundPayloadDeliveryOutcome,
+} from "../infra/outbound/deliver-types.js";
 export { resolveAgentOutboundIdentity } from "../infra/outbound/identity.js";
 export type { OutboundIdentity } from "../infra/outbound/identity.js";
 export { createReplyToFanout } from "../infra/outbound/reply-policy.js";
