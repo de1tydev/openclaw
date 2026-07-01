@@ -221,6 +221,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     livenessState: "working",
     hadDeterministicSideEffect: false,
     pendingEventChain: null,
+    pendingDetachedEventTasks: new Set(),
     messagingToolSentTexts: [],
     messagingToolSentTextsNormalized: [],
     messagingToolSentTargets: [],
@@ -1431,7 +1432,18 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     getUsageTotals,
     getCompactionCount: () => compactionCount,
     getLastCompactionTokensAfter: () => state.lastCompactionTokensAfter,
-    waitForPendingEvents: () => state.pendingEventChain ?? Promise.resolve(),
+    waitForPendingEvents: async () => {
+      while (true) {
+        const pending = [
+          ...(state.pendingEventChain ? [state.pendingEventChain] : []),
+          ...state.pendingDetachedEventTasks,
+        ];
+        if (pending.length === 0) {
+          return;
+        }
+        await Promise.allSettled(pending);
+      }
+    },
     getItemLifecycle: () => ({
       startedCount: state.itemStartedCount,
       completedCount: state.itemCompletedCount,

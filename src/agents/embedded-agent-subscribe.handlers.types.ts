@@ -157,6 +157,7 @@ export type EmbeddedAgentSubscribeState = {
   terminalAborted?: boolean;
   hadDeterministicSideEffect?: boolean;
   pendingEventChain: Promise<void> | null;
+  pendingDetachedEventTasks: Set<Promise<void>>;
 
   messagingToolSentTexts: string[];
   messagingToolSentTextsNormalized: string[];

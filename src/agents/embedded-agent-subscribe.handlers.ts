@@ -25,13 +25,29 @@ import { isPromiseLike } from "./embedded-agent-subscribe.promise.js";
 
 /** Create the serialized event dispatcher for subscribed embedded-agent sessions. */
 export function createEmbeddedAgentSessionEventHandler(ctx: EmbeddedAgentSubscribeContext) {
+  const trackDetachedEventStart = (): (() => void) => {
+    let resolveStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    ctx.state.pendingDetachedEventTasks.add(started);
+    void started.finally(() => {
+      ctx.state.pendingDetachedEventTasks.delete(started);
+    });
+    return () => {
+      resolveStarted?.();
+    };
+  };
+
   const scheduleEvent = (
     evt: EmbeddedAgentSubscribeEvent,
     handler: () => void | Promise<void>,
     options?: { detach?: boolean },
   ): void => {
     // Most stream events must preserve order across async formatting and flush
-    // work. A detached event may run after the chain without blocking delivery.
+    // work. A detached event may run after the chain; finalization waits until
+    // it starts, which lets synchronous delivery evidence settle without being
+    // held hostage by later best-effort output and hook callbacks.
     const run = () => {
       try {
         return handler();
@@ -60,10 +76,16 @@ export function createEmbeddedAgentSessionEventHandler(ctx: EmbeddedAgentSubscri
       return;
     }
 
+    const markDetachedStarted = options?.detach ? trackDetachedEventStart() : undefined;
     const task = ctx.state.pendingEventChain
-      .then(() => run())
+      .then(() => {
+        const result = run();
+        markDetachedStarted?.();
+        return result;
+      })
       .catch((err: unknown) => {
         ctx.log.debug(`${evt.type} handler failed: ${String(err)}`);
+        markDetachedStarted?.();
       })
       .finally(() => {
         if (ctx.state.pendingEventChain === task) {

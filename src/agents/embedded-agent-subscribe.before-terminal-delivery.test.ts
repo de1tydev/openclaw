@@ -118,6 +118,75 @@ describe("subscribeEmbeddedAgentSession before terminal delivery", () => {
     expect(onBlockReply).not.toHaveBeenCalled();
   });
 
+  it("waits for detached message tool evidence before exposing delivery state", async () => {
+    let resolveToolStartFlush: (() => void) | undefined;
+    const onBlockReplyFlush = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveToolStartFlush = resolve;
+        }),
+    );
+    const { emit, subscription } = createSubscribedSessionHarness({
+      runId: "run-message-tool-detached-wait",
+      onBlockReplyFlush,
+      onToolStreamBoundary: () => new Promise<void>(() => {}),
+      messageChannel: "feishu",
+    });
+
+    emit({
+      type: "tool_execution_start",
+      toolName: "message",
+      toolCallId: "tool-message",
+      args: {
+        action: "send",
+        media: "/tmp/report.xlsx",
+        message: "sent",
+      },
+    });
+    await vi.waitFor(() => expect(onBlockReplyFlush).toHaveBeenCalledTimes(1));
+    let drained = false;
+    const sentAtDrainPromise = subscription.waitForPendingEvents().then(() => {
+      drained = true;
+      return subscription.didSendViaMessagingTool();
+    });
+
+    emit({
+      type: "tool_execution_end",
+      toolName: "message",
+      toolCallId: "tool-message",
+      isError: false,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              ok: true,
+              channel: "feishu",
+              action: "send",
+              messageId: "om_1",
+              receipt: { primaryPlatformMessageId: "om_1" },
+            }),
+          },
+        ],
+        details: {
+          ok: true,
+          channel: "feishu",
+          action: "send",
+          messageId: "om_1",
+          receipt: { primaryPlatformMessageId: "om_1" },
+        },
+      },
+    });
+
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    resolveToolStartFlush?.();
+    await expect(sentAtDrainPromise).resolves.toBe(true);
+
+    expect(subscription.getMessagingToolSentMediaUrls()).toEqual(["/tmp/report.xlsx"]);
+  });
+
   it("defers assistant stream and partial replies until the terminal gate continues", async () => {
     const onAgentEvent = vi.fn();
     const onPartialReply = vi.fn();
