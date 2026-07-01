@@ -926,7 +926,7 @@ describe("config help copy quality", () => {
     expect(/default:\s*3/i.test(recentTurnsPreserve)).toBe(true);
 
     const midTurnPrecheck = FIELD_HELP["agents.defaults.compaction.midTurnPrecheck.enabled"];
-    expect(/mid-turn|tool loop|default:\s*false/i.test(midTurnPrecheck)).toBe(true);
+    expect(/mid-turn|tool loop|default:\s*true/i.test(midTurnPrecheck)).toBe(true);
 
     const postCompactionSections = FIELD_HELP["agents.defaults.compaction.postCompactionSections"];
     expect(/opt-in|Leave unset/i.test(postCompactionSections)).toBe(true);

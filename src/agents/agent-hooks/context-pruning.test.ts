@@ -364,6 +364,30 @@ describe("context-pruning", () => {
     expect(second).toBeUndefined();
   });
 
+  it("prunes cache-ttl config immediately when the provider has no cache-ttl signal", () => {
+    const sessionManager = {};
+
+    setContextPruningRuntime(sessionManager, {
+      settings: makeAggressiveSettings(),
+      contextWindowTokens: 1000,
+      isToolPrunable: () => true,
+      dropThinkingBlocks: false,
+      cacheTtlEligible: false,
+      lastCacheTouchAt: null,
+    });
+
+    const messages = makeSimpleToolPruningMessages();
+
+    const handler = createContextHandler();
+    const result = runContextHandler(handler, messages, sessionManager);
+
+    if (!result) {
+      throw new Error("expected handler to return messages");
+    }
+    expect(toolText(findToolResult(result.messages, "t1"))).toBe("[cleared]");
+    expect(getContextPruningRuntime(sessionManager)?.lastCacheTouchAt).toBeNull();
+  });
+
   it("respects tools allow/deny (deny wins; wildcards supported)", () => {
     const messages: AgentMessage[] = [
       makeUser("u1"),

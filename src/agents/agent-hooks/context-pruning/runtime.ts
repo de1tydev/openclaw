@@ -8,6 +8,7 @@ export type ContextPruningRuntimeValue = {
   contextWindowTokens?: number | null;
   isToolPrunable: (toolName: string) => boolean;
   dropThinkingBlocks: boolean;
+  cacheTtlEligible?: boolean;
   lastCacheTouchAt?: number | null;
 };
 

@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { getCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import contextPruningExtension from "../agent-hooks/context-pruning.js";
+import { getContextPruningRuntime } from "../agent-hooks/context-pruning/runtime.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
 
 vi.mock("../../plugins/provider-runtime.js", () => ({
@@ -144,5 +145,28 @@ describe("buildEmbeddedExtensionFactories", () => {
     });
 
     expect(factories).toContain(contextPruningExtension);
+  });
+
+  it("wires pruning for providers without cache-ttl eligibility", () => {
+    const sessionManager = {} as SessionManager;
+    const factories = buildEmbeddedExtensionFactories({
+      cfg: {
+        agents: {
+          defaults: {
+            contextPruning: {
+              mode: "cache-ttl",
+            },
+          },
+        },
+      } as OpenClawConfig,
+      sessionManager,
+      provider: "tode",
+      modelId: "deepseek-v4-flash",
+      model: { api: "openai-completions", contextWindow: 200_000 } as Model,
+    });
+
+    expect(factories).toContain(contextPruningExtension);
+    expect(getContextPruningRuntime(sessionManager)?.cacheTtlEligible).toBe(false);
+    expect(getContextPruningRuntime(sessionManager)?.lastCacheTouchAt).toBeNull();
   });
 });

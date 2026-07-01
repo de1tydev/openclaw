@@ -2403,7 +2403,7 @@ export async function runEmbeddedAttempt(
         agentId: sessionAgentId,
       });
       const midTurnPrecheckEnabled =
-        params.config?.agents?.defaults?.compaction?.midTurnPrecheck?.enabled === true;
+        params.config?.agents?.defaults?.compaction?.midTurnPrecheck?.enabled !== false;
       let pendingMidTurnPrecheckRequest: MidTurnPrecheckRequest | null = null;
       const onMidTurnPrecheck = (request: MidTurnPrecheckRequest) => {
         pendingMidTurnPrecheckRequest = request;
@@ -3865,22 +3865,37 @@ export async function runEmbeddedAttempt(
             cfg: params.config,
             agentId: sessionAgentId,
           });
+          const promptToolResultAggregateMaxChars =
+            promptToolResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER;
+          const persistedToolResultTruncation = truncateOversizedToolResultsInSessionManager({
+            sessionManager: activeSessionManager,
+            contextWindowTokens: contextTokenBudget,
+            maxCharsOverride: promptToolResultMaxChars,
+            aggregateMaxCharsOverride: promptToolResultAggregateMaxChars,
+            sessionFile: params.sessionFile,
+            sessionId: params.sessionId,
+            sessionKey: params.sessionKey,
+            agentId: sessionAgentId,
+          });
+          if (persistedToolResultTruncation.truncated) {
+            const sessionContext = activeSessionManager.buildSessionContext();
+            activeSession.agent.state.messages = sessionContext.messages;
+          }
           let promptHistoryMessages = activeSession.messages;
           const promptToolResultTruncation = truncateOversizedToolResultsInMessages(
             activeSession.messages,
             contextTokenBudget,
             promptToolResultMaxChars,
-            promptToolResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER,
+            promptToolResultAggregateMaxChars,
           );
           if (promptToolResultTruncation.truncatedCount > 0) {
-            promptHistoryMessages = promptToolResultTruncation.messages;
+            activeSession.agent.state.messages = promptToolResultTruncation.messages;
+            promptHistoryMessages = activeSession.messages;
             log.info(
               `[tool-result-truncation] Truncated ${promptToolResultTruncation.truncatedCount} ` +
                 `tool result(s) for prompt history ` +
                 `(maxChars=${promptToolResultMaxChars} ` +
-                `aggregateBudgetChars=${
-                  promptToolResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER
-                }) ` +
+                `aggregateBudgetChars=${promptToolResultAggregateMaxChars}) ` +
                 `sessionKey=${params.sessionKey ?? params.sessionId ?? "unknown"}`,
             );
           }
@@ -4397,7 +4412,7 @@ export async function runEmbeddedAttempt(
                     messages,
                     contextTokenBudget,
                     promptToolResultMaxChars,
-                    promptToolResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER,
+                    promptToolResultAggregateMaxChars,
                   );
                   return providerPromptHistoryTruncation.truncatedCount > 0
                     ? providerPromptHistoryTruncation.messages

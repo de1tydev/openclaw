@@ -2617,7 +2617,33 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
     ).toBe(1_000_000);
   });
 
-  it("bounds aggregate tool-result prompt history without rewriting append results", async () => {
+  it("enables mid-turn precheck by default in safeguard mode", async () => {
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        config: {
+          agents: {
+            defaults: {
+              compaction: {
+                mode: "safeguard",
+              },
+            },
+          },
+        } as OpenClawConfig,
+      },
+    });
+
+    const guardParams = mockParams(
+      hoisted.installToolResultContextGuardMock,
+      0,
+      "tool-result guard params",
+    ) as ToolResultGuardInstallParams;
+    expect(guardParams.midTurnPrecheck).toBeDefined();
+  });
+
+  it("persists aggregate tool-result truncation before prompt submission", async () => {
     const toolText = "process output ".repeat(70);
     const sessionMessages: AgentMessage[] = [{ role: "user", content: "seed", timestamp: 1 }];
     for (let index = 0; index < 8; index += 1) {
@@ -2689,11 +2715,12 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
     });
 
     expect(sumToolResultTextChars(sessionMessages)).toBeGreaterThan(4_000);
-    expect(sumToolResultTextChars(promptHandlerMessages)).toBeGreaterThan(4_000);
+    expect(sumToolResultTextChars(promptHandlerMessages)).toBeLessThanOrEqual(4_000);
+    expect(JSON.stringify(promptHandlerMessages)).toContain("truncated");
     expect(sumToolResultTextChars(submittedMessages)).toBeLessThanOrEqual(4_000);
     expect(JSON.stringify(submittedMessages)).toContain("truncated");
     expect(afterTurn).toHaveBeenCalledTimes(1);
-    expect(sumToolResultTextChars(afterTurnMessages)).toBeGreaterThan(4_000);
-    expect(JSON.stringify(afterTurnMessages)).not.toContain("truncated");
+    expect(sumToolResultTextChars(afterTurnMessages)).toBeLessThanOrEqual(4_000);
+    expect(JSON.stringify(afterTurnMessages)).toContain("truncated");
   });
 });

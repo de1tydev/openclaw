@@ -116,14 +116,16 @@ function buildContextPruningFactory(params: {
   if (raw?.mode !== "cache-ttl") {
     return undefined;
   }
-  if (!isCacheTtlEligibleProvider(params.provider, params.modelId, params.model?.api)) {
-    return undefined;
-  }
 
   const settings = computeEffectiveSettings(raw);
   if (!settings) {
     return undefined;
   }
+  const cacheTtlEligible = isCacheTtlEligibleProvider(
+    params.provider,
+    params.modelId,
+    params.model?.api,
+  );
   const transcriptPolicy = resolveTranscriptPolicy({
     modelApi: params.model?.api,
     provider: params.provider,
@@ -135,10 +137,13 @@ function buildContextPruningFactory(params: {
     contextWindowTokens: resolveContextWindowTokens(params),
     isToolPrunable: makeToolPrunablePredicate(settings.tools),
     dropThinkingBlocks: transcriptPolicy.dropThinkingBlocks,
-    lastCacheTouchAt: readLastCacheTtlTimestamp(params.sessionManager, {
-      provider: params.provider,
-      modelId: params.modelId,
-    }),
+    cacheTtlEligible,
+    lastCacheTouchAt: cacheTtlEligible
+      ? readLastCacheTtlTimestamp(params.sessionManager, {
+          provider: params.provider,
+          modelId: params.modelId,
+        })
+      : null,
   });
 
   return contextPruningExtension;
