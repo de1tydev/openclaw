@@ -248,6 +248,76 @@ describe("OpenAI-compatible completions params", () => {
     expect(capturedPayload?.tools).toEqual([]);
   });
 
+  it("does not label empty text tool results as attached images", async () => {
+    let capturedMessages: unknown;
+    const stream = streamOpenAICompletions(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: "run tools",
+            timestamp: 1,
+          },
+          {
+            role: "assistant",
+            api: "openai-completions",
+            provider: "openai",
+            model: "gpt-5.5",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "toolUse",
+            content: [
+              { type: "toolCall", id: "call_empty", name: "exec", arguments: {} },
+              { type: "toolCall", id: "call_image", name: "screenshot", arguments: {} },
+            ],
+            timestamp: 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_empty",
+            toolName: "exec",
+            content: [],
+            isError: false,
+            timestamp: 3,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_image",
+            toolName: "screenshot",
+            content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+            isError: false,
+            timestamp: 4,
+          },
+        ],
+      } as never,
+      {
+        apiKey: "sk-test",
+        onPayload(payload) {
+          capturedMessages = (payload as { messages?: unknown }).messages;
+          throw new Error("stop before network");
+        },
+      },
+    );
+
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("error");
+    const toolMessages = (capturedMessages as Array<Record<string, unknown>>).filter(
+      (message) => message.role === "tool",
+    );
+    expect(toolMessages.map((message) => message.content)).toEqual([
+      "(no output)",
+      "(tool image omitted: model does not support images)",
+    ]);
+  });
+
   it("does not reread an unreadable tool inventory length", async () => {
     let capturedPayload: Record<string, unknown> | undefined;
     const tools = new Proxy([], {

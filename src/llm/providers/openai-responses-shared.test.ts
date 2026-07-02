@@ -281,6 +281,59 @@ describe("convertResponsesMessages", () => {
     expect(JSON.stringify(input)).not.toContain("OPENCLAW_CACHE_BOUNDARY");
   });
 
+  it("does not label empty text tool results as attached images", () => {
+    const input = convertResponsesMessages(
+      nativeOpenAIModel,
+      {
+        messages: [
+          {
+            role: "assistant",
+            api: nativeOpenAIModel.api,
+            provider: nativeOpenAIModel.provider,
+            model: nativeOpenAIModel.id,
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "toolUse",
+            timestamp: 1,
+            content: [
+              { type: "toolCall", id: "call_empty|fc_empty", name: "exec", arguments: {} },
+              { type: "toolCall", id: "call_image|fc_image", name: "screenshot", arguments: {} },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_empty|fc_empty",
+            toolName: "exec",
+            content: [],
+            isError: false,
+            timestamp: 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_image|fc_image",
+            toolName: "screenshot",
+            content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      } as never,
+      allowedToolCallProviders,
+      { includeSystemPrompt: false },
+    ) as unknown as Array<Record<string, unknown>>;
+
+    const outputs = input
+      .filter((item) => item.type === "function_call_output")
+      .map((item) => item.output);
+    expect(outputs).toEqual(["(no output)", "(tool image omitted: model does not support images)"]);
+  });
+
   it("omits phase-tagged assistant replay ids without reasoning", () => {
     const input = convertResponsesMessages(
       nativeOpenAIModel,
