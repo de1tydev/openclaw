@@ -57,6 +57,11 @@ export async function recordInboundSession(params: {
   params.trackSessionMetaTask?.(metaTask);
   void metaTask;
 
+  // Reply dispatch initializes the same session entry with a guarded revision.
+  // Letting this metadata write run in the background can invalidate that
+  // snapshot and make otherwise valid inbound turns fail before the agent runs.
+  await metaTask;
+
   const update = params.updateLastRoute;
   if (!update) {
     return;

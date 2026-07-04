@@ -976,6 +976,41 @@ function createReplySessionInitializationRevision(entry: SessionEntry | undefine
   return JSON.stringify(entry ?? null);
 }
 
+function sessionEntryValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function resolveSameSessionInitializationRebase(params: {
+  currentEntry?: SessionEntry;
+  sessionEntry: SessionEntry;
+  snapshotEntry?: SessionEntry;
+}): SessionEntry | null {
+  const { currentEntry, sessionEntry, snapshotEntry } = params;
+  if (!currentEntry || !snapshotEntry) {
+    return null;
+  }
+  if (
+    !snapshotEntry.sessionId ||
+    currentEntry.sessionId !== snapshotEntry.sessionId ||
+    sessionEntry.sessionId !== snapshotEntry.sessionId
+  ) {
+    return null;
+  }
+  if (currentEntry.sessionFile !== snapshotEntry.sessionFile) {
+    return null;
+  }
+
+  const rebased: SessionEntry = { ...currentEntry };
+  const keys = new Set([...Object.keys(snapshotEntry), ...Object.keys(sessionEntry)]);
+  for (const key of keys) {
+    const entryKey = key as keyof SessionEntry;
+    if (!sessionEntryValuesEqual(sessionEntry[entryKey], snapshotEntry[entryKey])) {
+      (rebased as Record<string, unknown>)[key] = sessionEntry[entryKey];
+    }
+  }
+  return rebased;
+}
+
 function resolveInitializedReplySessionEntry(params: {
   agentId: string;
   currentEntry?: SessionEntry;
@@ -1415,6 +1450,7 @@ export async function commitReplySessionInitialization(params: {
   retiredEntry?: SessionEntryRetirement;
   sessionEntry: SessionEntry;
   sessionKey: string;
+  snapshotEntry?: SessionEntry;
   storePath: string;
 }): Promise<ReplySessionInitializationCommitResult> {
   const committed = await updateSessionStore(
@@ -1423,13 +1459,22 @@ export async function commitReplySessionInitialization(params: {
       const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
       const currentEntry = resolved.existing ? { ...resolved.existing } : undefined;
       const revision = createReplySessionInitializationRevision(currentEntry);
+      let entryToCommit = params.sessionEntry;
       if (revision !== params.expectedRevision) {
-        return {
-          ok: false,
-          ...(currentEntry ? { currentEntry } : {}),
-          reason: "stale-snapshot",
-          revision,
-        };
+        const rebasedEntry = resolveSameSessionInitializationRebase({
+          currentEntry,
+          sessionEntry: params.sessionEntry,
+          snapshotEntry: params.snapshotEntry,
+        });
+        if (!rebasedEntry) {
+          return {
+            ok: false,
+            ...(currentEntry ? { currentEntry } : {}),
+            reason: "stale-snapshot",
+            revision,
+          };
+        }
+        entryToCommit = rebasedEntry;
       }
 
       const readEntry = (sessionKey: string) => {
@@ -1440,9 +1485,9 @@ export async function commitReplySessionInitialization(params: {
         ? await params.prepareSessionEntry({
             ...(currentEntry ? { currentEntry } : {}),
             readEntry,
-            sessionEntry: params.sessionEntry,
+            sessionEntry: entryToCommit,
           })
-        : params.sessionEntry;
+        : entryToCommit;
       const sessionEntry = resolveInitializedReplySessionEntry({
         agentId: params.agentId,
         ...(currentEntry ? { currentEntry } : {}),

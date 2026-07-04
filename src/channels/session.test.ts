@@ -49,6 +49,70 @@ describe("recordInboundSession", () => {
   beforeEach(() => {
     recordSessionMetaFromInboundMock.mockClear();
     updateLastRouteMock.mockClear();
+    recordSessionMetaFromInboundMock.mockImplementation((_args?: unknown) =>
+      Promise.resolve(undefined),
+    );
+    updateLastRouteMock.mockImplementation((_args?: unknown) => Promise.resolve(undefined));
+  });
+
+  it("waits for inbound metadata before resolving when there is no route update", async () => {
+    let releaseMeta!: () => void;
+    recordSessionMetaFromInboundMock.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          releaseMeta = () => resolve(undefined);
+        }),
+    );
+    let settled = false;
+
+    const recording = recordInboundSession({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:main:demo-channel:1234:thread:42",
+      ctx,
+      onRecordError: vi.fn(),
+    }).then(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => expect(recordSessionMetaFromInboundMock).toHaveBeenCalledTimes(1));
+
+    expect(settled).toBe(false);
+
+    releaseMeta();
+    await recording;
+
+    expect(settled).toBe(true);
+  });
+
+  it("waits for inbound metadata before route updates", async () => {
+    let releaseMeta!: () => void;
+    recordSessionMetaFromInboundMock.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          releaseMeta = () => resolve(undefined);
+        }),
+    );
+
+    const recording = recordInboundSession({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:main:demo-channel:1234:thread:42",
+      ctx,
+      updateLastRoute: {
+        sessionKey: "agent:main:demo-channel:1234:thread:42",
+        channel: "demo-channel",
+        to: "demo-channel:1234",
+      },
+      onRecordError: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(recordSessionMetaFromInboundMock).toHaveBeenCalledTimes(1));
+
+    expect(updateLastRouteMock).not.toHaveBeenCalled();
+
+    releaseMeta();
+    await recording;
+
+    expect(updateLastRouteMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not pass ctx when updating a different session key", async () => {

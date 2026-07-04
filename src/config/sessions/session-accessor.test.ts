@@ -446,6 +446,148 @@ describe("session accessor file-backed seam", () => {
     });
   });
 
+  it("rebases reply session initialization over same-session metadata updates", async () => {
+    const sessionKey = "agent:main:main";
+    await upsertSessionEntry(
+      { sessionKey, storePath },
+      {
+        lastInteractionAt: 10,
+        lastTo: "old-target",
+        model: "old-model",
+        sessionFile: transcriptPath,
+        sessionId: "active-session",
+        totalTokens: 100,
+        totalTokensFresh: true,
+        updatedAt: 10,
+      },
+    );
+
+    const snapshot = loadReplySessionInitializationSnapshot({ sessionKey, storePath });
+    await patchSessionEntry({ sessionKey, storePath }, () => ({
+      contextTokens: 200_000,
+      model: "gpt-5.5",
+      totalTokens: 12_000,
+      updatedAt: 15,
+    }));
+
+    const committed = await commitReplySessionInitialization({
+      activeSessionKey: sessionKey,
+      agentId: "main",
+      expectedRevision: snapshot.revision,
+      sessionEntry: {
+        ...snapshot.currentEntry,
+        lastInteractionAt: 20,
+        lastTo: "new-target",
+        sessionId: "active-session",
+        updatedAt: 20,
+      },
+      sessionKey,
+      snapshotEntry: snapshot.currentEntry,
+      storePath,
+    });
+
+    expect(committed.ok).toBe(true);
+    if (!committed.ok) {
+      throw new Error("expected same-session initialization rebase to commit");
+    }
+    expect(committed.sessionEntry).toMatchObject({
+      contextTokens: 200_000,
+      lastInteractionAt: 20,
+      lastTo: "new-target",
+      model: "gpt-5.5",
+      sessionId: "active-session",
+      totalTokens: 12_000,
+      totalTokensFresh: true,
+      updatedAt: 20,
+    });
+  });
+
+  it("does not rebase reply session initialization over session id changes", async () => {
+    const sessionKey = "agent:main:main";
+    await upsertSessionEntry(
+      { sessionKey, storePath },
+      {
+        sessionId: "first-session",
+        updatedAt: 10,
+      },
+    );
+
+    const snapshot = loadReplySessionInitializationSnapshot({ sessionKey, storePath });
+    await upsertSessionEntry(
+      { sessionKey, storePath },
+      {
+        sessionId: "second-session",
+        updatedAt: 20,
+      },
+    );
+
+    const committed = await commitReplySessionInitialization({
+      activeSessionKey: sessionKey,
+      agentId: "main",
+      expectedRevision: snapshot.revision,
+      sessionEntry: {
+        sessionId: "first-session",
+        updatedAt: 30,
+      },
+      sessionKey,
+      snapshotEntry: snapshot.currentEntry,
+      storePath,
+    });
+
+    expect(committed).toMatchObject({
+      ok: false,
+      reason: "stale-snapshot",
+    });
+    expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({
+      sessionId: "second-session",
+    });
+  });
+
+  it("does not rebase reply session initialization over session file changes", async () => {
+    const sessionKey = "agent:main:main";
+    await upsertSessionEntry(
+      { sessionKey, storePath },
+      {
+        sessionFile: path.join(tempDir, "first.jsonl"),
+        sessionId: "active-session",
+        updatedAt: 10,
+      },
+    );
+
+    const snapshot = loadReplySessionInitializationSnapshot({ sessionKey, storePath });
+    await upsertSessionEntry(
+      { sessionKey, storePath },
+      {
+        sessionFile: path.join(tempDir, "second.jsonl"),
+        sessionId: "active-session",
+        updatedAt: 20,
+      },
+    );
+
+    const committed = await commitReplySessionInitialization({
+      activeSessionKey: sessionKey,
+      agentId: "main",
+      expectedRevision: snapshot.revision,
+      sessionEntry: {
+        ...snapshot.currentEntry,
+        sessionId: "active-session",
+        updatedAt: 30,
+      },
+      sessionKey,
+      snapshotEntry: snapshot.currentEntry,
+      storePath,
+    });
+
+    expect(committed).toMatchObject({
+      ok: false,
+      reason: "stale-snapshot",
+    });
+    expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({
+      sessionFile: path.join(tempDir, "second.jsonl"),
+      sessionId: "active-session",
+    });
+  });
+
   it("can borrow cached entry objects for read-only hot paths", async () => {
     const scope = {
       clone: false,
