@@ -703,10 +703,12 @@ describe("Feishu inbound debounce regressions", () => {
     expect(combined.text).toBe("first\nsecond");
   });
 
-  it("uses latest fresh message id when debounce batch ends with stale retry", async () => {
+  it("drops stale retry at entry while dispatching latest fresh message", async () => {
     vi.spyOn(dedup, "tryBeginFeishuMessageProcessing").mockReturnValue(true);
     const recordSpy = vi.spyOn(dedup, "recordProcessedFeishuMessage").mockResolvedValue(true);
-    setStaleRetryMocks("om_old_latest_fresh");
+    const hasProcessedSpy = vi
+      .spyOn(dedup, "hasProcessedFeishuMessage")
+      .mockImplementation(async (currentMessageId) => currentMessageId === "om_old_latest_fresh");
     const onMessage = await setupDebounceMonitor();
 
     await onMessage(createTextEvent({ messageId: "om_new_latest_fresh", text: "fresh" }));
@@ -721,15 +723,12 @@ describe("Feishu inbound debounce regressions", () => {
     expect(dispatched.message.message_id).toBe("om_new_latest_fresh");
     const combined = JSON.parse(dispatched.message.content) as { text?: string };
     expect(combined.text).toBe("fresh");
-    expect(recordSpy).toHaveBeenCalledTimes(1);
-    const [recordedMessageId, recordedNamespace, recordedLogger] = mockCallAt(
-      recordSpy,
-      0,
-      "Feishu processed-message record",
+    expect(hasProcessedSpy).toHaveBeenCalledWith(
+      "om_old_latest_fresh",
+      "default",
+      expect.any(Function),
     );
-    expect(recordedMessageId).toBe("om_old_latest_fresh");
-    expect(recordedNamespace).toBe("default");
-    expect(typeof recordedLogger).toBe("function");
+    expect(recordSpy).not.toHaveBeenCalled();
   });
 
   it("releases early event dedupe when debounced dispatch fails", async () => {

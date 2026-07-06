@@ -831,13 +831,18 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                 ...(audioAsVoice === true ? { audioAsVoice: true } : {}),
               });
             } else {
-              result = await runtime.sendMessageFeishu({
+              const sendText = runtime.feishuOutbound.sendText;
+              if (!sendText) {
+                throw new Error("Feishu text sending is not available.");
+              }
+              result = await sendText({
                 cfg: ctx.cfg,
                 to,
                 text: text!,
                 accountId: ctx.accountId ?? undefined,
-                replyToMessageId,
-                replyInThread,
+                ...(replyInThread
+                  ? { threadId: replyToMessageId }
+                  : { replyToId: replyToMessageId }),
               });
             }
             return jsonActionResult({

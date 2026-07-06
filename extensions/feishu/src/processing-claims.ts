@@ -1,5 +1,5 @@
 // Feishu plugin module implements processing claims behavior.
-const EVENT_DEDUP_TTL_MS = 5 * 60 * 1000;
+const PROCESSING_CLAIM_TTL_MS = 30 * 60 * 1000;
 const EVENT_MEMORY_MAX_SIZE = 2_000;
 
 const processingClaims = new Map<string, number>();
@@ -13,7 +13,7 @@ function resolveEventDedupeKey(
 }
 
 function pruneProcessingClaims(now: number): void {
-  const cutoff = now - EVENT_DEDUP_TTL_MS;
+  const cutoff = now - PROCESSING_CLAIM_TTL_MS;
   for (const [key, seenAt] of processingClaims) {
     if (seenAt < cutoff) {
       processingClaims.delete(key);

@@ -359,6 +359,21 @@ describe("feishuOutbound.sendText local-image auto-convert", () => {
     expectFeishuResult(result, "card_msg");
   });
 
+  it("uses native cards for pipe tables when renderMode=auto", async () => {
+    const result = await sendText({
+      cfg: emptyConfig,
+      to: "chat_1",
+      text: "| a | b |\n|---|---|\n| 1 | 2 |",
+      accountId: "main",
+    });
+
+    expect(sendStructuredCardCall()?.to).toBe("chat_1");
+    expect(sendStructuredCardCall()?.text).toBe("| a | b |\n|---|---|\n| 1 | 2 |");
+    expect(sendStructuredCardCall()?.accountId).toBe("main");
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    expectFeishuResult(result, "card_msg");
+  });
+
   it("forwards replyToId as replyToMessageId on sendText", async () => {
     await sendText({
       cfg: emptyConfig,

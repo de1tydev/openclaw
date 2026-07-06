@@ -338,6 +338,11 @@ export function createFeishuMessageReceiveHandler({
       return;
     }
     const processMessage = async () => {
+      if (await hasProcessedMessage(messageDedupeKey, accountId, log)) {
+        releaseFeishuMessageProcessing(messageDedupeKey, accountId);
+        log(`feishu[${accountId}]: dropping duplicate event for message ${messageId}`);
+        return;
+      }
       await inboundDebouncer.enqueue(event);
     };
     if (fireAndForget) {

@@ -12,7 +12,9 @@ import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
  * tasks behind a single in-flight task. After the cap, the in-flight task
  * is evicted from the blocking chain so newer messages for the same key
  * can proceed. The original task is NOT aborted — it continues running in
- * the background; it just stops starving the queue.
+ * the background; it just stops starving the queue. Callers must pair this
+ * with processing claims or persistent dedupe so redelivery cannot let a
+ * timed-out background task pollute the same conversation again.
  *
  * Without this cap, a single hung dispatch (e.g. an agent call that never
  * resolves) keeps later same-chat messages in `queued` state until the
