@@ -714,6 +714,172 @@ describe("truncateOversizedToolResultsInMessages", () => {
   });
 });
 
+describe("truncateOversizedToolResultsInMessages recent-result protection", () => {
+  it("never aggregate-reduces tool results newer than the protected assistant tail", () => {
+    const old1 = "o".repeat(15_000);
+    const old2 = "p".repeat(15_000);
+    const recent1 = "x".repeat(15_000);
+    const recent2 = "y".repeat(15_000);
+    const messages: AgentMessage[] = [
+      makeUserMessage("hello"),
+      makeAssistantMessage("a1"),
+      makeToolResult(old1, "old_1"),
+      makeAssistantMessage("a2"),
+      makeToolResult(old2, "old_2"),
+      makeAssistantMessage("a3"),
+      makeToolResult(recent1, "recent_1"),
+      makeAssistantMessage("a4"),
+      makeToolResult(recent2, "recent_2"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(
+      messages,
+      128_000,
+      64_000,
+      20_000,
+      undefined,
+      { protectRecentToolResults: true },
+    );
+
+    expect(result.truncatedCount).toBeGreaterThan(0);
+    // Tool results after the 2nd-from-last assistant keep their full text.
+    expect(getFirstToolResultText(result.messages[6] as ToolResultMessage)).toBe(recent1);
+    expect(getFirstToolResultText(result.messages[8] as ToolResultMessage)).toBe(recent2);
+    // Older tool results absorbed the aggregate reduction.
+    expect(getToolResultTextLength(result.messages[2] as AgentMessage)).toBeLessThan(old1.length);
+    expect(getToolResultTextLength(result.messages[4] as AgentMessage)).toBeLessThan(old2.length);
+  });
+
+  it("rewrites frozen history instead of sacrificing fresh tool results", () => {
+    const projectionState = createToolResultPromptProjectionState();
+    const oldText = "f".repeat(8_000);
+    const baseMessages: AgentMessage[] = [
+      makeUserMessage("hello"),
+      makeAssistantMessage("a1"),
+      makeToolResult(oldText, "frozen_1"),
+      makeAssistantMessage("a2"),
+      makeToolResult(oldText, "frozen_2"),
+      makeAssistantMessage("a3"),
+      makeToolResult(oldText, "aged_1"),
+      makeAssistantMessage("a4"),
+      makeToolResult(oldText, "aged_2"),
+    ];
+
+    // Round 1: under budget, nothing truncated, but unprotected keys
+    // (frozen_1/frozen_2) get frozen for byte-stability.
+    const first = truncateOversizedToolResultsInMessages(
+      baseMessages,
+      128_000,
+      64_000,
+      100_000,
+      projectionState,
+      { protectRecentToolResults: true },
+    );
+    expect(first.truncatedCount).toBe(0);
+
+    // Round 2: append a fresh batch and shrink the budget so the deficit
+    // cannot be met without touching frozen entries.
+    const fresh1 = "x".repeat(15_000);
+    const fresh2 = "y".repeat(15_000);
+    const grown: AgentMessage[] = [
+      ...baseMessages,
+      makeAssistantMessage("a5"),
+      makeToolResult(fresh1, "fresh_1"),
+      makeAssistantMessage("a6"),
+      makeToolResult(fresh2, "fresh_2"),
+    ];
+    const second = truncateOversizedToolResultsInMessages(
+      grown,
+      128_000,
+      64_000,
+      20_000,
+      projectionState,
+      { protectRecentToolResults: true },
+    );
+
+    // Fresh protected results stay fully intact.
+    expect(getFirstToolResultText(second.messages[10] as ToolResultMessage)).toBe(fresh1);
+    expect(getFirstToolResultText(second.messages[12] as ToolResultMessage)).toBe(fresh2);
+    // Previously frozen, never-truncated entries were reduced by the fallback.
+    const frozenLengths = [
+      getToolResultTextLength(second.messages[2] as AgentMessage),
+      getToolResultTextLength(second.messages[4] as AgentMessage),
+    ];
+    expect(frozenLengths.some((length) => length < oldText.length)).toBe(true);
+  });
+
+  it("keeps frozen entries byte-stable when eligible entries cover the deficit", () => {
+    const projectionState = createToolResultPromptProjectionState();
+    const oldText = "s".repeat(10_000);
+    const baseMessages: AgentMessage[] = [
+      makeUserMessage("hello"),
+      makeAssistantMessage("a1"),
+      makeToolResult(oldText, "stablefrozen_1"),
+      makeAssistantMessage("a2"),
+      makeToolResult(oldText, "stablefrozen_2"),
+      makeAssistantMessage("a3"),
+      makeToolResult(oldText, "stablemid_1"),
+      makeAssistantMessage("a4"),
+      makeToolResult(oldText, "stablerecent_1"),
+    ];
+
+    const first = truncateOversizedToolResultsInMessages(
+      baseMessages,
+      128_000,
+      64_000,
+      25_000,
+      projectionState,
+      { protectRecentToolResults: true },
+    );
+    expect(first.truncatedCount).toBeGreaterThan(0);
+    const firstFrozen1 = getFirstToolResultText(first.messages[2] as ToolResultMessage);
+    const firstFrozen2 = getFirstToolResultText(first.messages[4] as ToolResultMessage);
+
+    const grown: AgentMessage[] = [
+      ...baseMessages,
+      makeAssistantMessage("a5"),
+      makeToolResult("n".repeat(1_000), "stablenew_1"),
+    ];
+    const second = truncateOversizedToolResultsInMessages(
+      grown,
+      128_000,
+      64_000,
+      25_000,
+      projectionState,
+      { protectRecentToolResults: true },
+    );
+
+    // The small deficit was covered by the now-eligible mid entry; frozen
+    // projections stayed byte-identical for provider prefix caching.
+    expect(getFirstToolResultText(second.messages[2] as ToolResultMessage)).toBe(firstFrozen1);
+    expect(getFirstToolResultText(second.messages[4] as ToolResultMessage)).toBe(firstFrozen2);
+  });
+
+  it("still applies the per-result oversize cap to protected tool results", () => {
+    const big = "b".repeat(30_000);
+    const messages: AgentMessage[] = [
+      makeUserMessage("hello"),
+      makeAssistantMessage("a1"),
+      makeToolResult("small output", "cap_small"),
+      makeAssistantMessage("a2"),
+      makeToolResult(big, "cap_big"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(
+      messages,
+      128_000,
+      12_000,
+      100_000,
+      undefined,
+      { protectRecentToolResults: true },
+    );
+
+    expect(result.truncatedCount).toBe(1);
+    expect(getToolResultTextLength(result.messages[4] as AgentMessage)).toBeLessThanOrEqual(12_000);
+    expect(getFirstToolResultText(result.messages[2] as ToolResultMessage)).toBe("small output");
+  });
+});
+
 describe("truncateOversizedToolResultsInSession", () => {
   it("readably truncates aggregate medium tool results in a session file", async () => {
     // Persisted truncation rewrites JSONL directly and emits the transcript

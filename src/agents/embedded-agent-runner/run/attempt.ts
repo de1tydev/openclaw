@@ -3863,6 +3863,7 @@ export async function runEmbeddedAttempt(
             toolResultMaxChars,
             undefined,
             toolResultPromptProjectionState,
+            { protectRecentToolResults: true },
           );
           if (truncationResult.truncatedCount > 0) {
             preflightRecovery = {
@@ -4183,6 +4184,7 @@ export async function runEmbeddedAttempt(
             promptToolResultMaxChars,
             promptToolResultAggregateMaxChars,
             toolResultPromptProjectionState,
+            { protectRecentToolResults: true },
           );
           if (promptToolResultTruncation.messages !== activeSession.messages) {
             promptHistoryMessages = promptToolResultTruncation.messages;
@@ -4653,6 +4655,7 @@ export async function runEmbeddedAttempt(
               toolResultMaxChars,
               undefined,
               toolResultPromptProjectionState,
+              { protectRecentToolResults: true },
             );
             if (
               truncationResult.truncatedCount > 0 ||
@@ -4732,6 +4735,7 @@ export async function runEmbeddedAttempt(
                     promptToolResultMaxChars,
                     promptToolResultAggregateMaxChars,
                     toolResultPromptProjectionState,
+                    { protectRecentToolResults: true },
                   );
                   if (providerPromptHistoryTruncation.messages === messages) {
                     return messages;

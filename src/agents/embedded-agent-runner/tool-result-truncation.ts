@@ -54,6 +54,14 @@ const XL_CONTEXT_TOOL_RESULT_TOKENS = 200_000;
 const MIN_KEEP_CHARS = 2_000;
 const RECOVERY_MIN_KEEP_CHARS = 0;
 
+/**
+ * Tool results emitted after the Nth-from-last assistant message are the
+ * model's freshest evidence. Aggregate prompt-history reduction must never
+ * touch them: emptying the output the model just requested makes it conclude
+ * the tool layer itself is broken.
+ */
+export const PROTECTED_RECENT_ASSISTANT_MESSAGES = 2;
+
 type ToolResultTruncationOptions = {
   suffix?: string | ((truncatedChars: number) => string);
   minKeepChars?: number;
@@ -356,6 +364,7 @@ export function truncateOversizedToolResultsInMessages(
   maxCharsOverride?: number,
   aggregateMaxCharsOverride?: number,
   projectionState?: ToolResultPromptProjectionState,
+  options?: { protectRecentToolResults?: boolean },
 ): { messages: AgentMessage[]; truncatedCount: number } {
   const maxChars = Math.max(
     1,
@@ -369,6 +378,9 @@ export function truncateOversizedToolResultsInMessages(
   const projectionKeys = projectionState
     ? getToolResultProjectionKeys(messages, projectionState)
     : [];
+  const protectedIndexes = options?.protectRecentToolResults
+    ? getProtectedRecentToolResultIndexes(messages)
+    : undefined;
   const branch = messages.map((message, index) => {
     const projectionKey = projectionKeys[index];
     const projectedMessage = projectionKey
@@ -392,6 +404,7 @@ export function truncateOversizedToolResultsInMessages(
         !projectionKey ||
         !projectionState?.frozen.has(projectionKey) ||
         (projectedMessage !== undefined && mergedMessage === message),
+      aggregateProtected: protectedIndexes?.has(index) === true,
     };
   });
   const plan = buildToolResultReplacementPlan({
@@ -402,6 +415,11 @@ export function truncateOversizedToolResultsInMessages(
   });
   if (projectionState) {
     for (const [index] of messages.entries()) {
+      // Protected recent results stay unfrozen so they remain first-class
+      // aggregate candidates once they age out of the protected tail.
+      if (protectedIndexes?.has(index)) {
+        continue;
+      }
       const projectionKey = projectionKeys[index];
       if (projectionKey) {
         projectionState.frozen.add(projectionKey);
@@ -426,7 +444,9 @@ export function truncateOversizedToolResultsInMessages(
       const projectedMessage = replacedBranch[index]?.message;
       const projectionKey = projectionKeys[index];
       if (projectionKey) {
-        projectionState.frozen.add(projectionKey);
+        if (!protectedIndexes?.has(index)) {
+          projectionState.frozen.add(projectionKey);
+        }
         if (projectedMessage && projectedMessage !== originalMessage) {
           projectionState.replacements.set(projectionKey, projectedMessage);
         }
@@ -437,6 +457,35 @@ export function truncateOversizedToolResultsInMessages(
     messages: replacedBranch.map((entry) => entry.message as AgentMessage),
     truncatedCount: replacementIds.size,
   };
+}
+
+/**
+ * Indexes of tool results newer than the Nth-from-last assistant message.
+ * With fewer than N assistant messages in view, every tool result is recent.
+ */
+function getProtectedRecentToolResultIndexes(messages: AgentMessage[]): Set<number> {
+  let remaining = PROTECTED_RECENT_ASSISTANT_MESSAGES;
+  let cutoffIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if ((messages[i] as { role?: string }).role !== "assistant") {
+      continue;
+    }
+    remaining--;
+    if (remaining === 0) {
+      cutoffIndex = i;
+      break;
+    }
+  }
+  const protectedIndexes = new Set<number>();
+  for (let i = 0; i < messages.length; i++) {
+    if ((messages[i] as { role?: string }).role !== "toolResult") {
+      continue;
+    }
+    if (cutoffIndex === -1 || i > cutoffIndex) {
+      protectedIndexes.add(i);
+    }
+  }
+  return protectedIndexes;
 }
 
 function calculateRecoveryAggregateToolResultChars(
@@ -468,6 +517,7 @@ type ToolResultBranchEntry = {
   type: string;
   message?: AgentMessage;
   aggregateEligible?: boolean;
+  aggregateProtected?: boolean;
 };
 
 type ToolResultReplacement = {
@@ -589,7 +639,13 @@ function buildAggregateToolResultReplacements(params: {
       (
         item,
       ): item is {
-        entry: { id: string; type: string; message: AgentMessage; aggregateEligible?: boolean };
+        entry: {
+          id: string;
+          type: string;
+          message: AgentMessage;
+          aggregateEligible?: boolean;
+          aggregateProtected?: boolean;
+        };
         index: number;
       } =>
         item.entry.type === "message" &&
@@ -602,6 +658,7 @@ function buildAggregateToolResultReplacements(params: {
       message: item.entry.message,
       textLength: getToolResultTextLength(item.entry.message),
       aggregateEligible: item.entry.aggregateEligible !== false,
+      aggregateProtected: item.entry.aggregateProtected === true,
     }))
     .filter((item) => item.textLength > 0);
 
@@ -624,41 +681,46 @@ function buildAggregateToolResultReplacements(params: {
   let remainingReduction = totalChars - params.aggregateBudgetChars;
   const replacements: Array<{ entryId: string; message: AgentMessage }> = [];
 
+  type AggregateCandidate = (typeof candidates)[number];
+
   // Spend aggregate reduction on older entries first so fresh tool output stays intact.
-  for (const candidate of candidates
-    .filter((item) => item.aggregateEligible)
-    .toSorted((a, b) => {
+  const runTruncatePass = (pool: AggregateCandidate[]) => {
+    for (const candidate of pool.toSorted((a, b) => {
       if (a.index !== b.index) {
         return a.index - b.index;
       }
       return b.textLength - a.textLength;
     })) {
-    if (remainingReduction <= 0) {
-      break;
-    }
-    const reducibleChars = Math.max(0, candidate.textLength - minTruncatedTextChars);
-    if (reducibleChars <= 0) {
-      continue;
-    }
+      if (remainingReduction <= 0) {
+        break;
+      }
+      const reducibleChars = Math.max(0, candidate.textLength - minTruncatedTextChars);
+      if (reducibleChars <= 0) {
+        continue;
+      }
 
-    const requestedReduction = Math.min(reducibleChars, remainingReduction);
-    const targetChars = Math.max(minTruncatedTextChars, candidate.textLength - requestedReduction);
-    const truncatedMessage = truncateToolResultMessage(candidate.message, targetChars, {
-      minKeepChars,
-      suffix: suffixFactory,
-    });
-    const newLength = getToolResultTextLength(truncatedMessage);
-    const actualReduction = Math.max(0, candidate.textLength - newLength);
-    if (actualReduction <= 0) {
-      continue;
+      const requestedReduction = Math.min(reducibleChars, remainingReduction);
+      const targetChars = Math.max(
+        minTruncatedTextChars,
+        candidate.textLength - requestedReduction,
+      );
+      const truncatedMessage = truncateToolResultMessage(candidate.message, targetChars, {
+        minKeepChars,
+        suffix: suffixFactory,
+      });
+      const newLength = getToolResultTextLength(truncatedMessage);
+      const actualReduction = Math.max(0, candidate.textLength - newLength);
+      if (actualReduction <= 0) {
+        continue;
+      }
+
+      replacements.push({ entryId: candidate.entryId, message: truncatedMessage });
+      remainingReduction -= actualReduction;
     }
+  };
 
-    replacements.push({ entryId: candidate.entryId, message: truncatedMessage });
-    remainingReduction -= actualReduction;
-  }
-
-  if (remainingReduction > 0) {
-    for (const candidate of candidates.filter((item) => item.aggregateEligible)) {
+  const runClearPass = (pool: AggregateCandidate[]) => {
+    for (const candidate of pool) {
       if (remainingReduction <= 0) {
         break;
       }
@@ -683,6 +745,27 @@ function buildAggregateToolResultReplacements(params: {
         replacements.push(replacement);
       }
       remainingReduction -= actualReduction;
+    }
+  };
+
+  const eligiblePool = candidates.filter(
+    (item) => item.aggregateEligible && !item.aggregateProtected,
+  );
+  runTruncatePass(eligiblePool);
+  if (remainingReduction > 0) {
+    runClearPass(eligiblePool);
+  }
+
+  // Fallback: once eligible entries are exhausted, rewrite frozen history
+  // (accepting one prompt-cache prefix invalidation) instead of leaving the
+  // prompt over budget. Protected recent results are never touched here.
+  if (remainingReduction > 0) {
+    const frozenPool = candidates.filter(
+      (item) => !item.aggregateEligible && !item.aggregateProtected,
+    );
+    runTruncatePass(frozenPool);
+    if (remainingReduction > 0) {
+      runClearPass(frozenPool);
     }
   }
 
