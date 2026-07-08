@@ -662,6 +662,91 @@ describe("feishuPlugin actions", () => {
     expect(resultDetails(result).messageId).toBe("om_media");
   });
 
+  it("fans out every mediaUrls attachment with the caption on the first send only", async () => {
+    feishuOutboundSendMediaMock
+      .mockResolvedValueOnce({
+        channel: "feishu",
+        messageId: "om_media_1",
+        chatId: "oc_group_1",
+      })
+      .mockResolvedValueOnce({
+        channel: "feishu",
+        messageId: "om_media_2",
+        chatId: "oc_group_1",
+      })
+      .mockResolvedValueOnce({
+        channel: "feishu",
+        messageId: "om_media_3",
+        chatId: "oc_group_1",
+      });
+
+    const result = await feishuPlugin.actions?.handleAction?.({
+      action: "send",
+      params: {
+        to: "chat:oc_group_1",
+        message: "bundle caption",
+        media: "/tmp/plot-1.png",
+        mediaUrls: ["/tmp/plot-1.png", "/tmp/plot-2.png", "/tmp/final.dat"],
+      },
+      cfg,
+      accountId: undefined,
+      toolContext: {},
+      mediaLocalRoots: ["/tmp"],
+    } as never);
+
+    expect(feishuOutboundSendMediaMock).toHaveBeenCalledTimes(3);
+    const firstArgs = requireRecord(
+      mockCallArg(feishuOutboundSendMediaMock, 0, 0, "feishuOutbound.sendMedia"),
+      "first media args",
+    );
+    expect(firstArgs.text).toBe("bundle caption");
+    expect(firstArgs.mediaUrl).toBe("/tmp/plot-1.png");
+    const secondArgs = requireRecord(
+      mockCallArg(feishuOutboundSendMediaMock, 1, 0, "feishuOutbound.sendMedia"),
+      "second media args",
+    );
+    expect(secondArgs.text).toBe("");
+    expect(secondArgs.mediaUrl).toBe("/tmp/plot-2.png");
+    const thirdArgs = requireRecord(
+      mockCallArg(feishuOutboundSendMediaMock, 2, 0, "feishuOutbound.sendMedia"),
+      "third media args",
+    );
+    expect(thirdArgs.text).toBe("");
+    expect(thirdArgs.mediaUrl).toBe("/tmp/final.dat");
+
+    const details = resultDetails(result);
+    expect(details.messageId).toBe("om_media_1");
+    const receipt = requireRecord(details.receipt, "merged receipt");
+    expect(receipt.platformMessageIds).toEqual(["om_media_1", "om_media_2", "om_media_3"]);
+  });
+
+  it("reports partial delivery when an attachment send fails mid-bundle", async () => {
+    feishuOutboundSendMediaMock
+      .mockResolvedValueOnce({
+        channel: "feishu",
+        messageId: "om_media_1",
+        chatId: "oc_group_1",
+      })
+      .mockRejectedValueOnce(new Error("upload exploded"));
+
+    await expect(
+      feishuPlugin.actions?.handleAction?.({
+        action: "send",
+        params: {
+          to: "chat:oc_group_1",
+          message: "bundle caption",
+          mediaUrls: ["/tmp/plot-1.png", "/tmp/final.dat"],
+        },
+        cfg,
+        accountId: undefined,
+        toolContext: {},
+        mediaLocalRoots: ["/tmp"],
+      } as never),
+    ).rejects.toThrow(
+      'Feishu send delivered 1 of 2 attachments, then failed on "/tmp/final.dat": upload exploded',
+    );
+  });
+
   it("passes asVoice through media sends", async () => {
     feishuOutboundSendMediaMock.mockResolvedValueOnce({
       channel: "feishu",

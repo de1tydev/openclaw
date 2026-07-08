@@ -14,7 +14,9 @@ import { createChatChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   defineChannelMessageAdapter,
   createRuntimeOutboundDelegates,
+  createMessageReceiptFromOutboundResults,
   type ChannelMessageSendResult,
+  type MessageReceipt,
   type MessageReceiptPartKind,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { createPairingPrefixStripper } from "openclaw/plugin-sdk/channel-pairing";
@@ -83,12 +85,46 @@ import { feishuSetupWizard, runFeishuLogin } from "./setup-surface.js";
 import { looksLikeFeishuId, normalizeFeishuTarget } from "./targets.js";
 import type { FeishuConfig, FeishuProbeResult, ResolvedFeishuAccount } from "./types.js";
 
-function readFeishuMediaParam(params: Record<string, unknown>): string | undefined {
-  const media = params.media;
-  if (typeof media !== "string") {
-    return undefined;
+function readFeishuMediaListParam(params: Record<string, unknown>): string[] {
+  const mediaUrls: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: unknown) => {
+    if (typeof value !== "string" || !value.trim() || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    mediaUrls.push(value);
+  };
+  push(params.media);
+  if (Array.isArray(params.mediaUrls)) {
+    for (const entry of params.mediaUrls) {
+      push(entry);
+    }
   }
-  return media.trim() ? media : undefined;
+  return mediaUrls;
+}
+
+function mergeFeishuMediaActionSendResults<T>(results: T[]): T {
+  const first = results[0];
+  if (results.length <= 1 || !first) {
+    return first;
+  }
+  const receiptSources = results.map((result) => {
+    const view = result as { messageId?: string; chatId?: string; receipt?: MessageReceipt };
+    return {
+      channel: "feishu",
+      ...(view.messageId ? { messageId: view.messageId } : {}),
+      ...(view.chatId ? { chatId: view.chatId, conversationId: view.chatId } : {}),
+      ...(view.receipt ? { receipt: view.receipt } : {}),
+    };
+  });
+  return {
+    ...(first as object),
+    receipt: createMessageReceiptFromOutboundResults({
+      results: receiptSources,
+      kind: "media",
+    }),
+  } as T;
 }
 
 function readBooleanParam(params: Record<string, unknown>, keys: string[]): boolean | undefined {
@@ -785,20 +821,20 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             }
             const presentation = normalizeMessagePresentation(ctx.params.presentation);
             const text = readFirstString(ctx.params, ["text", "message"]);
-            const mediaUrl = readFeishuMediaParam(ctx.params);
+            const mediaUrls = readFeishuMediaListParam(ctx.params);
             const audioAsVoice = readBooleanParam(ctx.params, ["asVoice", "audioAsVoice"]);
             const card = presentation
               ? buildFeishuPresentationCard({ presentation, fallbackText: text })
               : undefined;
-            if (card && mediaUrl) {
+            if (card && mediaUrls.length > 0) {
               throw new Error(`Feishu ${ctx.action} does not support card with media.`);
             }
-            if (!card && !text && !mediaUrl) {
+            if (!card && !text && mediaUrls.length === 0) {
               throw new Error(`Feishu ${ctx.action} requires text/message, media, or card.`);
             }
             const runtime = await loadFeishuChannelRuntime();
             const maybeSendMedia = runtime.feishuOutbound.sendMedia;
-            if (mediaUrl && !maybeSendMedia) {
+            if (mediaUrls.length > 0 && !maybeSendMedia) {
               throw new Error("Feishu media sending is not available.");
             }
             const sendMedia = maybeSendMedia;
@@ -817,19 +853,34 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                 replyToMessageId,
                 replyInThread,
               });
-            } else if (mediaUrl) {
-              result = await sendMedia!({
-                cfg: ctx.cfg,
-                to,
-                text: text ?? "",
-                mediaUrl,
-                accountId: ctx.accountId ?? undefined,
-                mediaLocalRoots: ctx.mediaLocalRoots,
-                ...(replyInThread
-                  ? { threadId: replyToMessageId }
-                  : { replyToId: replyToMessageId }),
-                ...(audioAsVoice === true ? { audioAsVoice: true } : {}),
-              });
+            } else if (mediaUrls.length > 0) {
+              // Fan out every attachment; the caption rides on the first item only.
+              // A single-media call keeps the exact legacy arg shape and result.
+              const mediaResults: Awaited<ReturnType<NonNullable<typeof sendMedia>>>[] = [];
+              for (const [mediaIndex, mediaUrl] of mediaUrls.entries()) {
+                try {
+                  mediaResults.push(
+                    await sendMedia!({
+                      cfg: ctx.cfg,
+                      to,
+                      text: mediaIndex === 0 ? (text ?? "") : "",
+                      mediaUrl,
+                      accountId: ctx.accountId ?? undefined,
+                      mediaLocalRoots: ctx.mediaLocalRoots,
+                      ...(replyInThread
+                        ? { threadId: replyToMessageId }
+                        : { replyToId: replyToMessageId }),
+                      ...(audioAsVoice === true ? { audioAsVoice: true } : {}),
+                    }),
+                  );
+                } catch (error) {
+                  const detail = error instanceof Error ? error.message : String(error);
+                  throw new Error(
+                    `Feishu ${ctx.action} delivered ${mediaResults.length} of ${mediaUrls.length} attachments, then failed on "${mediaUrl}": ${detail}. Re-send the undelivered attachments.`,
+                  );
+                }
+              }
+              result = mergeFeishuMediaActionSendResults(mediaResults);
             } else {
               const sendText = runtime.feishuOutbound.sendText;
               if (!sendText) {
