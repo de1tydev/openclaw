@@ -13,8 +13,7 @@ export default function contextPruningExtension(api: ExtensionAPI): void {
       return undefined;
     }
 
-    const respectCacheTtl = runtime.cacheTtlEligible !== false;
-    if (runtime.settings.mode === "cache-ttl" && respectCacheTtl) {
+    if (runtime.settings.mode === "cache-ttl") {
       const ttlMs = runtime.settings.ttlMs;
       const lastTouch = runtime.lastCacheTouchAt ?? null;
       // Cache-TTL mode prunes only after the cache has aged out, preserving
@@ -40,7 +39,7 @@ export default function contextPruningExtension(api: ExtensionAPI): void {
       return undefined;
     }
 
-    if (runtime.settings.mode === "cache-ttl" && respectCacheTtl) {
+    if (runtime.settings.mode === "cache-ttl") {
       runtime.lastCacheTouchAt = Date.now();
     }
 
