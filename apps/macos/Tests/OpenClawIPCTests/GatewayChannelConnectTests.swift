@@ -51,7 +51,11 @@ struct GatewayChannelConnectTests {
         }
 
         func makeWebSocketTask(url: URL) -> WebSocketTaskBox {
-            _ = url
+            self.makeWebSocketTask(request: URLRequest(url: url))
+        }
+
+        func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
+            _ = request
             let task = GatewayTestWebSocketTask(receiveHook: { _, receiveIndex in
                 if receiveIndex == 0 {
                     return .data(GatewayWebSocketTestSupport.connectChallengeData())
@@ -110,75 +114,15 @@ struct GatewayChannelConnectTests {
             })
     }
 
-    private static func connectWithTestTimeout(_ channel: GatewayChannelActor) async throws {
-        try await AsyncTimeout.withTimeout(
-            seconds: 5,
-            onTimeout: {
-                NSError(
-                    domain: "GatewayChannelConnectTests",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "test gateway connect timed out"])
-            },
-            operation: { try await channel.connect() })
-    }
-
-    private static func shutdownWithTestTimeout(_ channel: GatewayChannelActor) async throws {
-        try await AsyncTimeout.withTimeout(
-            seconds: 5,
-            onTimeout: {
-                NSError(
-                    domain: "GatewayChannelConnectTests",
-                    code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "test gateway shutdown timed out"])
-            },
-            operation: { await channel.shutdown() })
-    }
-
-    private func withTemporaryStateDir(_ operation: () async throws -> Void) async throws {
+    @MainActor
+    private func withTemporaryStateDir<T>(_ operation: () async throws -> T) async throws -> T {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        try Self.seedDeviceIdentity(in: tempDir)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        func restoreStateDir(_ previousStateDir: String?) {
-            if let previousStateDir {
-                setenv("OPENCLAW_STATE_DIR", previousStateDir, 1)
-            } else {
-                unsetenv("OPENCLAW_STATE_DIR")
-            }
-        }
-
-        await TestIsolationLock.shared.acquire()
-        let previousStateDir = getenv("OPENCLAW_STATE_DIR").map { String(cString: $0) }
-        setenv("OPENCLAW_STATE_DIR", tempDir.path, 1)
-
-        do {
+        return try await TestIsolation.withEnvValues(["OPENCLAW_STATE_DIR": tempDir.path]) {
             try await operation()
-            restoreStateDir(previousStateDir)
-            await TestIsolationLock.shared.release()
-        } catch {
-            restoreStateDir(previousStateDir)
-            await TestIsolationLock.shared.release()
-            throw error
         }
-    }
-
-    private static func seedDeviceIdentity(in stateDir: URL) throws {
-        let identityDir = stateDir.appendingPathComponent("identity", isDirectory: true)
-        try FileManager.default.createDirectory(at: identityDir, withIntermediateDirectories: true)
-        let identity = """
-            {
-              "deviceId": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
-              "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
-              "privateKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-              "createdAtMs": 1700000000000
-            }
-            """
-        try identity.write(
-            to: identityDir.appendingPathComponent("device.json", isDirectory: false),
-            atomically: true,
-            encoding: .utf8)
     }
 
     @Test func `concurrent connect is single flight on success`() async throws {
@@ -195,7 +139,6 @@ struct GatewayChannelConnectTests {
         _ = try await t2.value
 
         #expect(session.snapshotMakeCount() == 1)
-        try await Self.shutdownWithTestTimeout(channel)
     }
 
     @Test func `connect advertises compatible protocol range`() async throws {
@@ -211,29 +154,13 @@ struct GatewayChannelConnectTests {
         let channel = try GatewayChannelActor(
             url: #require(URL(string: "ws://example.invalid")),
             token: nil,
-            session: WebSocketSessionBox(session: session),
-            connectOptions: GatewayConnectOptions(
-                role: "operator",
-                scopes: [],
-                caps: [],
-                commands: [],
-                permissions: [:],
-                clientId: "openclaw-macos-test",
-                clientMode: "test",
-                clientDisplayName: "OpenClaw macOS Test",
-                includeDeviceIdentity: false))
+            session: WebSocketSessionBox(session: session))
 
-        do {
-            try await Self.connectWithTestTimeout(channel)
+        try await channel.connect()
 
-            let params = try #require(recorder.snapshot())
-            #expect(params["minProtocol"] as? Int == GATEWAY_MIN_PROTOCOL_VERSION)
-            #expect(params["maxProtocol"] as? Int == GATEWAY_PROTOCOL_VERSION)
-        } catch {
-            try? await Self.shutdownWithTestTimeout(channel)
-            throw error
-        }
-        try await Self.shutdownWithTestTimeout(channel)
+        let params = try #require(recorder.snapshot())
+        #expect(params["minProtocol"] as? Int == GATEWAY_MIN_PROTOCOL_VERSION)
+        #expect(params["maxProtocol"] as? Int == GATEWAY_PROTOCOL_VERSION)
     }
 
     @Test func `concurrent connect shares failure`() async throws {
@@ -256,7 +183,6 @@ struct GatewayChannelConnectTests {
             if case .failure = r2 { true } else { false }
         }())
         #expect(session.snapshotMakeCount() == 1)
-        try await Self.shutdownWithTestTimeout(channel)
     }
 
     @Test func `default operator connect scopes preserve pairing and admin`() async throws {
@@ -275,7 +201,7 @@ struct GatewayChannelConnectTests {
                 token: nil,
                 session: WebSocketSessionBox(session: session))
 
-            try await Self.connectWithTestTimeout(channel)
+            try await channel.connect()
 
             #expect(capture.snapshot() == [
                 "operator.admin",
@@ -284,7 +210,6 @@ struct GatewayChannelConnectTests {
                 "operator.approvals",
                 "operator.pairing",
             ])
-            try await Self.shutdownWithTestTimeout(channel)
         }
     }
 
@@ -304,20 +229,19 @@ struct GatewayChannelConnectTests {
             bootstrapToken: "setup-bootstrap-token",
             session: WebSocketSessionBox(session: session))
 
-        try await Self.connectWithTestTimeout(channel)
+        try await channel.connect()
 
         #expect(capture.snapshot() == [
             "operator.approvals",
             "operator.read",
             "operator.write",
         ])
-        try await Self.shutdownWithTestTimeout(channel)
     }
 
     @Test func `stored device token connect scopes reuse cached scopes`() async throws {
         try await self.withTemporaryStateDir {
             let identity = DeviceIdentityStore.loadOrCreate()
-            let storedEntry = DeviceAuthStore.storeToken(
+            let storedEntry: DeviceAuthEntry = DeviceAuthStore.storeToken(
                 deviceId: identity.deviceId,
                 role: "operator",
                 token: "bootstrap-device-token",
@@ -336,10 +260,9 @@ struct GatewayChannelConnectTests {
                 token: nil,
                 session: WebSocketSessionBox(session: session))
 
-            try await Self.connectWithTestTimeout(channel)
+            try await channel.connect()
 
             #expect(capture.snapshot() == storedEntry.scopes)
-            try await Self.shutdownWithTestTimeout(channel)
         }
     }
 
@@ -376,10 +299,9 @@ struct GatewayChannelConnectTests {
                     clientMode: "ui",
                     clientDisplayName: "OpenClaw macOS Debug CLI"))
 
-            try await Self.connectWithTestTimeout(channel)
+            try await channel.connect()
 
             #expect(capture.snapshot() == requestedScopes)
-            try await Self.shutdownWithTestTimeout(channel)
         }
     }
 
@@ -395,7 +317,7 @@ struct GatewayChannelConnectTests {
             session: WebSocketSessionBox(session: session))
 
         do {
-            try await Self.connectWithTestTimeout(channel)
+            try await channel.connect()
             Issue.record("expected GatewayConnectAuthError")
         } catch let error as GatewayConnectAuthError {
             #expect(error.detail == .authTokenMissing)
@@ -404,11 +326,8 @@ struct GatewayChannelConnectTests {
             #expect(error.recommendedNextStep == .updateAuthConfiguration)
             #expect(error.recommendedNextStepCode == GatewayConnectRecoveryNextStep.updateAuthConfiguration.rawValue)
         } catch {
-            try? await Self.shutdownWithTestTimeout(channel)
             Issue.record("unexpected error: \(error)")
-            return
         }
-        try await Self.shutdownWithTestTimeout(channel)
     }
 
     @Test func `connect maps user cancelled authentication with cached TLS failure`() async throws {
@@ -426,15 +345,12 @@ struct GatewayChannelConnectTests {
             session: WebSocketSessionBox(session: session))
 
         do {
-            try await Self.connectWithTestTimeout(channel)
+            try await channel.connect()
             Issue.record("expected GatewayTLSValidationError")
         } catch let error as GatewayTLSValidationError {
             #expect(error.failure == failure)
         } catch {
-            try? await Self.shutdownWithTestTimeout(channel)
             Issue.record("unexpected error: \(error)")
-            return
         }
-        try await Self.shutdownWithTestTimeout(channel)
     }
 }

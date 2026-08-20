@@ -258,7 +258,10 @@ export type EmbeddedAgentSubscribeContext = {
     data: AssistantStreamData,
     options?: { emitPartialReply?: boolean },
   ) => void;
-  emitBlockReply: (payload: BlockReplyPayload) => void;
+  emitBlockReply: (
+    payload: BlockReplyPayload,
+    options?: { assistantMessageIndex?: number; consumePendingToolMedia?: boolean },
+  ) => void;
   flushDeferredAssistantEvents: () => void;
   flushDeferredBlockReplies: () => void;
   clearDeferredAssistantEvents: () => void;
@@ -327,6 +330,7 @@ type ToolHandlerState = Pick<
   | "successfulCronAdds"
   | "deterministicApprovalPromptSent"
   | "toolExecutionSinceLastBlockReply"
+  | "assistantMessageIndex"
 >;
 
 export type ToolHandlerContext = {

@@ -2,8 +2,8 @@ import Foundation
 import OpenClawKit
 import Testing
 
-private extension NSLock {
-    func withDeviceRetryLock<T>(_ body: () -> T) -> T {
+extension NSLock {
+    fileprivate func withDeviceRetryLock<T>(_ body: () -> T) -> T {
         self.lock()
         defer { self.unlock() }
         return body()
@@ -50,7 +50,8 @@ private final class ConnectAuthRecorder: @unchecked Sendable {
     }
 }
 
-private final class TrustedDeviceRetryGatewaySession: WebSocketSessioning, GatewayDeviceTokenRetryTrustProviding, @unchecked Sendable {
+private final class TrustedDeviceRetryGatewaySession: WebSocketSessioning, GatewayDeviceTokenRetryTrustProviding,
+@unchecked Sendable {
     let allowsDeviceTokenRetryAuth: Bool
 
     private let lock = NSLock()
@@ -63,7 +64,11 @@ private final class TrustedDeviceRetryGatewaySession: WebSocketSessioning, Gatew
     }
 
     func makeWebSocketTask(url: URL) -> WebSocketTaskBox {
-        _ = url
+        self.makeWebSocketTask(request: URLRequest(url: url))
+    }
+
+    func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
+        _ = request
         let attemptIndex = self.lock.withDeviceRetryLock { () -> Int in
             let current = self.makeCount
             self.makeCount += 1
@@ -100,7 +105,6 @@ struct GatewayChannelDeviceTokenRetryTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        try Self.seedDeviceIdentity(in: tempDir)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         try await TestIsolation.withEnvValues(["OPENCLAW_STATE_DIR": tempDir.path]) {
@@ -131,56 +135,23 @@ struct GatewayChannelDeviceTokenRetryTests {
                 connectOptions: options)
 
             do {
-                do {
-                    try await Self.connectWithTestTimeout(channel)
-                    Issue.record("expected stale shared-token connect to fail before device-token retry")
-                } catch let error as GatewayConnectAuthError {
-                    #expect(error.detail == .authTokenMismatch)
-                }
-
-                try await Self.connectWithTestTimeout(channel)
-
-                let firstAuth = try #require(recorder.auth(at: 0))
-                #expect(firstAuth["token"] as? String == "stale-shared-token")
-                #expect(firstAuth["deviceToken"] == nil)
-
-                let retryAuth = try #require(recorder.auth(at: 1))
-                #expect(retryAuth["token"] as? String == "stale-shared-token")
-                #expect(retryAuth["deviceToken"] as? String == "stored-device-token")
-            } catch {
-                await channel.shutdown()
-                throw error
+                try await channel.connect()
+                Issue.record("expected stale shared-token connect to fail before device-token retry")
+            } catch let error as GatewayConnectAuthError {
+                #expect(error.detail == .authTokenMismatch)
             }
+
+            try await channel.connect()
+
+            let firstAuth = try #require(recorder.auth(at: 0))
+            #expect(firstAuth["token"] as? String == "stale-shared-token")
+            #expect(firstAuth["deviceToken"] == nil)
+
+            let retryAuth = try #require(recorder.auth(at: 1))
+            #expect(retryAuth["token"] as? String == "stale-shared-token")
+            #expect(retryAuth["deviceToken"] as? String == "stored-device-token")
+
             await channel.shutdown()
         }
-    }
-
-    private static func connectWithTestTimeout(_ channel: GatewayChannelActor) async throws {
-        try await AsyncTimeout.withTimeout(
-            seconds: 5,
-            onTimeout: {
-                NSError(
-                    domain: "GatewayChannelDeviceTokenRetryTests",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "test gateway connect timed out"])
-            },
-            operation: { try await channel.connect() })
-    }
-
-    private static func seedDeviceIdentity(in stateDir: URL) throws {
-        let identityDir = stateDir.appendingPathComponent("identity", isDirectory: true)
-        try FileManager.default.createDirectory(at: identityDir, withIntermediateDirectories: true)
-        let identity = """
-            {
-              "deviceId": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
-              "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
-              "privateKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-              "createdAtMs": 1700000000000
-            }
-            """
-        try identity.write(
-            to: identityDir.appendingPathComponent("device.json", isDirectory: false),
-            atomically: true,
-            encoding: .utf8)
     }
 }
