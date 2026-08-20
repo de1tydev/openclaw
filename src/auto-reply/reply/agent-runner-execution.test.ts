@@ -274,7 +274,6 @@ vi.mock("./agent-runner-utils.js", () => ({
       thinkLevel?: string;
       authProfileId?: string;
       authProfileIdSource?: "auto" | "user";
-      thinkLevel?: string;
       agentAccountId?: string;
       chatType?: string;
     };

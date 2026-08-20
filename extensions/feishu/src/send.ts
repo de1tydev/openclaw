@@ -1,4 +1,6 @@
 // Feishu plugin module implements send behavior.
+import { randomUUID } from "node:crypto";
+import { OutboundDeliveryError } from "openclaw/plugin-sdk/channel-outbound";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import {
@@ -10,23 +12,32 @@ import type { ClawdbotConfig } from "../runtime-api.js";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { requestFeishuApi } from "./comment-shared.js";
+import { buildFeishuMarkdownTableCards } from "./markdown-table-card.js";
 import type { MentionTarget } from "./mention-target.types.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { resolveFeishuCardTemplate } from "./native-card.js";
 import { parsePostContent } from "./post.js";
+import { getFeishuRuntime } from "./runtime.js";
 import {
   assertFeishuMessageApiSuccess,
   resolveFeishuReceiptKind,
   toFeishuSendResult,
 } from "./send-result.js";
 import { resolveFeishuSendTarget } from "./send-target.js";
+import {
+  invalidateFeishuOutboundCardContent,
+  lookupFeishuStreamingCardContent,
+  recordFeishuOutboundCardContent,
+} from "./streaming-card-content-index.js";
 import type { FeishuChatType, FeishuMessageInfo, FeishuSendResult } from "./types.js";
 
 export { resolveFeishuCardTemplate };
 
 const WITHDRAWN_REPLY_ERROR_CODES = new Set([230011, 231003]);
 const INTERACTIVE_CARD_FALLBACK_TEXT = "[Interactive Card]";
+const FEISHU_CLIENT_UPGRADE_FALLBACK_TEXT = "请升级至最新版本客户端，以查看内容";
 const POST_FALLBACK_TEXT = "[Rich text message]";
+
 function shouldFallbackFromReplyTarget(response: { code?: number; msg?: string }): boolean {
   if (response.code !== undefined && WITHDRAWN_REPLY_ERROR_CODES.has(response.code)) {
     return true;
@@ -66,11 +77,11 @@ type FeishuCreateMessageClient = {
     message: {
       reply: (opts: {
         path: { message_id: string };
-        data: { content: string; msg_type: string; reply_in_thread?: true };
+        data: { content: string; msg_type: string; reply_in_thread?: true; uuid?: string };
       }) => Promise<{ code?: number; msg?: string; data?: { message_id?: string } }>;
       create: (opts: {
         params: { receive_id_type: "chat_id" | "email" | "open_id" | "union_id" | "user_id" };
-        data: { receive_id: string; content: string; msg_type: string };
+        data: { receive_id: string; content: string; msg_type: string; uuid?: string };
       }) => Promise<{ code?: number; msg?: string; data?: { message_id?: string } }>;
     };
   };
@@ -109,6 +120,7 @@ async function sendFallbackDirect(
     receiveIdType: "chat_id" | "email" | "open_id" | "union_id" | "user_id";
     content: string;
     msgType: string;
+    uuid?: string;
   },
   errorPrefix: string,
 ): Promise<FeishuSendResult> {
@@ -120,6 +132,7 @@ async function sendFallbackDirect(
           receive_id: params.receiveId,
           content: params.content,
           msg_type: params.msgType,
+          uuid: params.uuid,
         },
       }),
     errorPrefix,
@@ -147,8 +160,13 @@ async function sendReplyOrFallbackDirect(
     replyErrorPrefix: string;
   },
 ): Promise<FeishuSendResult> {
+  const deliveryUuid = randomUUID();
   if (!params.replyToMessageId) {
-    return sendFallbackDirect(client, params.directParams, params.directErrorPrefix);
+    return sendFallbackDirect(
+      client,
+      { ...params.directParams, uuid: deliveryUuid },
+      params.directErrorPrefix,
+    );
   }
 
   const replyTargetFallbackError =
@@ -167,6 +185,7 @@ async function sendReplyOrFallbackDirect(
           data: {
             content: params.content,
             msg_type: params.msgType,
+            uuid: deliveryUuid,
             ...(params.replyInThread ? { reply_in_thread: true } : {}),
           },
         }),
@@ -180,13 +199,21 @@ async function sendReplyOrFallbackDirect(
     if (replyTargetFallbackError) {
       throw replyTargetFallbackError;
     }
-    return sendFallbackDirect(client, params.directParams, params.directErrorPrefix);
+    return sendFallbackDirect(
+      client,
+      { ...params.directParams, uuid: deliveryUuid },
+      params.directErrorPrefix,
+    );
   }
   if (shouldFallbackFromReplyTarget(response)) {
     if (replyTargetFallbackError) {
       throw replyTargetFallbackError;
     }
-    return sendFallbackDirect(client, params.directParams, params.directErrorPrefix);
+    return sendFallbackDirect(
+      client,
+      { ...params.directParams, uuid: deliveryUuid },
+      params.directErrorPrefix,
+    );
   }
   assertFeishuMessageApiSuccess(response, params.replyErrorPrefix);
   return toFeishuSendResult(
@@ -232,10 +259,92 @@ function applyCardTemplateVariables(text: string, variables: Map<string, string>
   });
 }
 
+function stringifyInteractiveTableCell(value: unknown, variables: Map<string, string>): string {
+  if (typeof value === "string") {
+    return applyCardTemplateVariables(value, variables);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyInteractiveTableCell(item, variables)).join(", ");
+  }
+  if (isRecord(value)) {
+    const text = value.text ?? value.content ?? value.name ?? value.label;
+    if (typeof text === "string") {
+      return applyCardTemplateVariables(text, variables);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function escapeInteractiveTableCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+
+function renderInteractiveTableText(
+  element: Record<string, unknown>,
+  variables: Map<string, string>,
+): string | undefined {
+  const rawColumns = Array.isArray(element.columns) ? element.columns : [];
+  const columns = rawColumns
+    .map((column, index) => {
+      if (!isRecord(column)) {
+        return null;
+      }
+      const rawName = typeof column.name === "string" ? column.name.trim() : "";
+      const name = rawName || `col_${index}`;
+      const displayName =
+        typeof column.display_name === "string" && column.display_name.trim()
+          ? column.display_name.trim()
+          : name;
+      const horizontalAlign =
+        column.horizontal_align === "center" || column.horizontal_align === "right"
+          ? column.horizontal_align
+          : "left";
+      return { name, displayName, horizontalAlign };
+    })
+    .filter(
+      (column): column is { name: string; displayName: string; horizontalAlign: string } =>
+        column !== null,
+    );
+  if (columns.length === 0) {
+    return undefined;
+  }
+
+  const separator = columns.map((column) =>
+    column.horizontalAlign === "center"
+      ? ":---:"
+      : column.horizontalAlign === "right"
+        ? "---:"
+        : "---",
+  );
+  const rows = (Array.isArray(element.rows) ? element.rows : [])
+    .filter(isRecord)
+    .map((row) =>
+      columns.map((column) =>
+        escapeInteractiveTableCell(stringifyInteractiveTableCell(row[column.name], variables)),
+      ),
+    );
+  return [
+    `| ${columns.map((column) => escapeInteractiveTableCell(column.displayName)).join(" | ")} |`,
+    `| ${separator.join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
+
 function extractInteractiveElementText(
   element: unknown,
   variables: Map<string, string>,
 ): string | undefined {
+  if (Array.isArray(element)) {
+    return extractInteractiveElementsText(element, variables);
+  }
   if (!isRecord(element)) {
     return undefined;
   }
@@ -245,11 +354,20 @@ function extractInteractiveElementText(
   if (tag === "div" && typeof text?.content === "string") {
     return applyCardTemplateVariables(text.content, variables);
   }
+  if (tag === "text" && typeof element.text === "string") {
+    return applyCardTemplateVariables(element.text, variables);
+  }
+  if (tag === "text" && typeof text?.content === "string") {
+    return applyCardTemplateVariables(text.content, variables);
+  }
   if ((tag === "markdown" || tag === "lark_md") && typeof element.content === "string") {
     return applyCardTemplateVariables(element.content, variables);
   }
   if (tag === "plain_text" && typeof element.content === "string") {
     return applyCardTemplateVariables(element.content, variables);
+  }
+  if (tag === "table") {
+    return renderInteractiveTableText(element, variables);
   }
   return undefined;
 }
@@ -297,23 +415,146 @@ function parseInteractivePostFallback(parsed: unknown): string | undefined {
   return textContent && textContent !== POST_FALLBACK_TEXT ? textContent : undefined;
 }
 
-function parseInteractiveCardContent(parsed: unknown): string {
+function readInteractiveTitle(
+  parsed: Record<string, unknown>,
+  variables: Map<string, string>,
+): string | undefined {
+  if (typeof parsed.title === "string" && parsed.title.trim()) {
+    return applyCardTemplateVariables(parsed.title.trim(), variables);
+  }
+  const header = isRecord(parsed.header) ? parsed.header : undefined;
+  const title = isRecord(header?.title) ? header.title : undefined;
+  if (typeof title?.content === "string" && title.content.trim()) {
+    return applyCardTemplateVariables(title.content.trim(), variables);
+  }
+  return undefined;
+}
+
+type ParsedInteractiveCardContent = {
+  text: string;
+  fallbackKind?: "card-reference" | "client-upgrade";
+  cardId?: string;
+};
+
+function readStreamingCardReferenceId(parsed: unknown): string | undefined {
+  if (!isRecord(parsed) || parsed.type !== "card" || !isRecord(parsed.data)) {
+    return undefined;
+  }
+  const cardId = parsed.data.card_id;
+  return typeof cardId === "string" && cardId.trim() ? cardId.trim() : undefined;
+}
+
+function resolveFallbackOnlyInteractiveKind(
+  content: string,
+): ParsedInteractiveCardContent["fallbackKind"] | undefined {
+  const lines = content
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.includes(FEISHU_CLIENT_UPGRADE_FALLBACK_TEXT) ? "client-upgrade" : undefined;
+}
+
+function parseInteractiveCardContent(parsed: unknown): ParsedInteractiveCardContent {
   if (!isRecord(parsed)) {
-    return INTERACTIVE_CARD_FALLBACK_TEXT;
+    return { text: INTERACTIVE_CARD_FALLBACK_TEXT };
+  }
+
+  const cardId = readStreamingCardReferenceId(parsed);
+  if (cardId) {
+    return {
+      text: INTERACTIVE_CARD_FALLBACK_TEXT,
+      fallbackKind: "card-reference",
+      cardId,
+    };
   }
 
   const variables = readCardTemplateVariables(parsed);
+  const parts: string[] = [];
+  const title = readInteractiveTitle(parsed, variables);
+  if (title) {
+    parts.push(title);
+  }
   for (const elements of readInteractiveElementArrays(parsed)) {
     const text = extractInteractiveElementsText(elements, variables);
     if (text) {
-      return text;
+      parts.push(text);
     }
   }
+  const combined = parts.join("\n").trim();
+  if (combined) {
+    return {
+      text: combined,
+      fallbackKind: resolveFallbackOnlyInteractiveKind(combined),
+    };
+  }
 
-  return parseInteractivePostFallback(parsed) ?? INTERACTIVE_CARD_FALLBACK_TEXT;
+  const postFallback = parseInteractivePostFallback(parsed);
+  if (postFallback) {
+    return {
+      text: postFallback,
+      fallbackKind: resolveFallbackOnlyInteractiveKind(postFallback),
+    };
+  }
+  return { text: INTERACTIVE_CARD_FALLBACK_TEXT };
 }
 
-function parseFeishuMessageContent(rawContent: string, msgType: string): string {
+function logInteractiveCardHydrationMiss(context: {
+  fallbackKind: NonNullable<ParsedInteractiveCardContent["fallbackKind"]>;
+  messageId?: string;
+  cardId?: string;
+  accountId?: string;
+  chatId?: string;
+}): void {
+  try {
+    getFeishuRuntime()
+      .logging.getChildLogger(
+        { channel: "feishu", surface: "outbound-card-content" },
+        { level: "warn" },
+      )
+      .warn("feishu outbound card content index miss", {
+        fallbackKind: context.fallbackKind,
+        messageId: context.messageId,
+        cardId: context.cardId,
+        accountId: context.accountId,
+        chatId: context.chatId,
+      });
+  } catch {
+    // Quoted-message parsing must stay best-effort when runtime logging is unavailable.
+  }
+}
+
+function hydrateInteractiveCardContent(
+  parsedContent: ParsedInteractiveCardContent,
+  context: { messageId?: string; accountId?: string; chatId?: string },
+): string {
+  if (!parsedContent.fallbackKind) {
+    return parsedContent.text;
+  }
+  const indexed = lookupFeishuStreamingCardContent({
+    cardId: parsedContent.cardId,
+    messageId: context.messageId,
+    accountId: context.accountId,
+    chatId: context.chatId,
+  });
+  if (indexed?.text.trim()) {
+    return indexed.text;
+  }
+  logInteractiveCardHydrationMiss({
+    fallbackKind: parsedContent.fallbackKind,
+    messageId: context.messageId,
+    cardId: parsedContent.cardId,
+    accountId: context.accountId,
+    chatId: context.chatId,
+  });
+  return INTERACTIVE_CARD_FALLBACK_TEXT;
+}
+
+function parseFeishuMessageContent(
+  rawContent: string,
+  msgType: string,
+  context: { messageId?: string; accountId?: string; chatId?: string } = {},
+): string {
   if (!rawContent) {
     return "";
   }
@@ -335,7 +576,7 @@ function parseFeishuMessageContent(rawContent: string, msgType: string): string 
   }
 
   if (msgType === "interactive") {
-    return parseInteractiveCardContent(parsed);
+    return hydrateInteractiveCardContent(parseInteractiveCardContent(parsed), context);
   }
 
   if (typeof parsed === "string") {
@@ -357,13 +598,16 @@ function parseFeishuMessageContent(rawContent: string, msgType: string): string 
 function parseFeishuMessageItem(
   item: FeishuMessageGetItem,
   fallbackMessageId?: string,
+  options: { accountId?: string } = {},
 ): FeishuMessageInfo {
   const msgType = item.msg_type ?? "text";
   const rawContent = item.body?.content ?? "";
+  const messageId = item.message_id ?? fallbackMessageId ?? "";
+  const chatId = item.chat_id ?? "";
 
   return {
-    messageId: item.message_id ?? fallbackMessageId ?? "",
-    chatId: item.chat_id ?? "",
+    messageId,
+    chatId,
     chatType:
       item.chat_type === "group" ||
       item.chat_type === "topic_group" ||
@@ -374,7 +618,12 @@ function parseFeishuMessageItem(
     senderId: item.sender?.id,
     senderOpenId: item.sender?.id_type === "open_id" ? item.sender?.id : undefined,
     senderType: item.sender?.sender_type,
-    content: parseFeishuMessageContent(rawContent, msgType),
+    content: parseFeishuMessageContent(rawContent, msgType, {
+      messageId,
+      accountId: options.accountId,
+      chatId,
+    }),
+    rawContent,
     contentType: msgType,
     createTime: parseStrictNonNegativeInteger(item.create_time),
     threadId: item.thread_id || undefined,
@@ -419,13 +668,13 @@ export async function getMessageFeishu(params: {
       return null;
     }
 
-    return parseFeishuMessageItem(item, messageId);
+    return parseFeishuMessageItem(item, messageId, { accountId: account.accountId });
   } catch {
     return null;
   }
 }
 
-type FeishuThreadMessageInfo = {
+export type FeishuThreadMessageInfo = {
   messageId: string;
   senderId?: string;
   senderType?: string;
@@ -497,7 +746,7 @@ export async function listFeishuThreadMessages(params: {
       continue;
     }
 
-    const parsed = parseFeishuMessageItem(item);
+    const parsed = parseFeishuMessageItem(item, undefined, { accountId: account.accountId });
 
     results.push({
       messageId: parsed.messageId,
@@ -518,7 +767,7 @@ export async function listFeishuThreadMessages(params: {
   return results;
 }
 
-type SendFeishuMessageParams = {
+export type SendFeishuMessageParams = {
   cfg: ClawdbotConfig;
   to: string;
   text: string;
@@ -599,6 +848,7 @@ export async function sendMessageFeishu(
   const tableMode = resolveMarkdownTableMode({
     cfg,
     channel: "feishu",
+    accountId,
   });
 
   const messageText = convertMarkdownTables(text ?? "", tableMode);
@@ -618,7 +868,7 @@ export async function sendMessageFeishu(
   });
 }
 
-type SendFeishuCardParams = {
+export type SendFeishuCardParams = {
   cfg: ClawdbotConfig;
   to: string;
   card: Record<string, unknown>;
@@ -627,16 +877,31 @@ type SendFeishuCardParams = {
   replyInThread?: boolean;
   allowTopLevelReplyFallback?: boolean;
   accountId?: string;
+  /** Explicit display/source text safe to recover when Feishu later returns only a card shell. */
+  recoverableText?: string;
 };
 
 export async function sendCardFeishu(params: SendFeishuCardParams): Promise<FeishuSendResult> {
-  const { cfg, to, card, replyToMessageId, replyInThread, allowTopLevelReplyFallback, accountId } =
-    params;
-  const { client, receiveId, receiveIdType } = resolveFeishuSendTarget({ cfg, to, accountId });
+  const {
+    cfg,
+    to,
+    card,
+    replyToMessageId,
+    replyInThread,
+    allowTopLevelReplyFallback,
+    accountId,
+    recoverableText,
+  } = params;
+  const {
+    client,
+    receiveId,
+    receiveIdType,
+    accountId: resolvedAccountId,
+  } = resolveFeishuSendTarget({ cfg, to, accountId });
   const content = JSON.stringify(card);
 
   const directParams = { receiveId, receiveIdType, content, msgType: "interactive" };
-  return sendReplyOrFallbackDirect(client, {
+  const result = await sendReplyOrFallbackDirect(client, {
     replyToMessageId,
     replyInThread,
     allowTopLevelReplyFallback,
@@ -646,6 +911,13 @@ export async function sendCardFeishu(params: SendFeishuCardParams): Promise<Feis
     directErrorPrefix: "Feishu card send failed",
     replyErrorPrefix: "Feishu card reply failed",
   });
+  recordFeishuOutboundCardContent({
+    messageId: result.messageId,
+    accountId: resolvedAccountId,
+    chatId: result.chatId,
+    text: recoverableText,
+  });
+  return result;
 }
 
 export async function editMessageFeishu(params: {
@@ -654,8 +926,11 @@ export async function editMessageFeishu(params: {
   text?: string;
   card?: Record<string, unknown>;
   accountId?: string;
+  chatId?: string;
+  /** Explicit display/source text safe to recover for edited interactive cards. */
+  recoverableText?: string;
 }): Promise<{ messageId: string; contentType: "post" | "interactive" }> {
-  const { cfg, messageId, text, card, accountId } = params;
+  const { cfg, messageId, text, card, accountId, chatId, recoverableText } = params;
   const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
@@ -680,12 +955,24 @@ export async function editMessageFeishu(params: {
       throw new Error(`Feishu message edit failed: ${response.msg || `code ${response.code}`}`);
     }
 
+    if (recoverableText?.trim()) {
+      recordFeishuOutboundCardContent({
+        messageId,
+        accountId: account.accountId,
+        chatId,
+        text: recoverableText,
+      });
+    } else {
+      invalidateFeishuOutboundCardContent({ messageId, accountId: account.accountId });
+    }
+
     return { messageId, contentType: "interactive" };
   }
 
   const tableMode = resolveMarkdownTableMode({
     cfg,
     channel: "feishu",
+    accountId,
   });
   const messageText = convertMarkdownTables(text!, tableMode);
   const payload = buildFeishuPostMessagePayload({ messageText });
@@ -698,7 +985,48 @@ export async function editMessageFeishu(params: {
     throw new Error(`Feishu message edit failed: ${response.msg || `code ${response.code}`}`);
   }
 
+  invalidateFeishuOutboundCardContent({ messageId, accountId: account.accountId });
+
   return { messageId, contentType: "post" };
+}
+
+export async function updateCardFeishu(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  card: Record<string, unknown>;
+  accountId?: string;
+  chatId?: string;
+  /** Explicit display/source text safe to recover for updated interactive cards. */
+  recoverableText?: string;
+}): Promise<void> {
+  const { cfg, messageId, card, accountId, chatId, recoverableText } = params;
+  const account = resolveFeishuRuntimeAccount({ cfg, accountId });
+  if (!account.configured) {
+    throw new Error(`Feishu account "${account.accountId}" not configured`);
+  }
+
+  const client = createFeishuClient(account);
+  const content = JSON.stringify(card);
+
+  const response = await client.im.message.patch({
+    path: { message_id: messageId },
+    data: { content },
+  });
+
+  if (response.code !== 0) {
+    throw new Error(`Feishu card update failed: ${response.msg || `code ${response.code}`}`);
+  }
+
+  if (recoverableText?.trim()) {
+    recordFeishuOutboundCardContent({
+      messageId,
+      accountId: account.accountId,
+      chatId,
+      text: recoverableText,
+    });
+  } else {
+    invalidateFeishuOutboundCardContent({ messageId, accountId: account.accountId });
+  }
 }
 
 /**
@@ -706,6 +1034,19 @@ export async function editMessageFeishu(params: {
  * Cards render markdown properly (code blocks, tables, links, etc.)
  * Uses schema 2.0 format for proper markdown rendering.
  */
+function convertFeishuMarkdownTablesForDelivery(
+  cfg: ClawdbotConfig,
+  text: string,
+  accountId?: string,
+): string {
+  const tableMode = resolveMarkdownTableMode({
+    cfg,
+    channel: "feishu",
+    accountId,
+  });
+  return convertMarkdownTables(text, tableMode);
+}
+
 export function buildMarkdownCard(text: string): Record<string, unknown> {
   return {
     schema: "2.0",
@@ -730,6 +1071,84 @@ export type CardHeaderConfig = {
   /** Feishu header color template (blue, green, red, orange, purple, grey, etc.). Defaults to "blue". */
   template?: string;
 };
+
+function resolveNativeTableCardHeader(
+  header?: CardHeaderConfig,
+): { title: string; template?: string } | undefined {
+  if (!header?.title.trim()) {
+    return undefined;
+  }
+  return {
+    title: header.title,
+    template: resolveFeishuCardTemplate(header.template) ?? "blue",
+  };
+}
+
+async function sendNativeMarkdownTableCardsFeishu(params: {
+  cfg: ClawdbotConfig;
+  to: string;
+  text: string;
+  fallbackText?: string;
+  replyToMessageId?: string;
+  replyInThread?: boolean;
+  allowTopLevelReplyFallback?: boolean;
+  mentions?: MentionTarget[];
+  accountId?: string;
+  header?: CardHeaderConfig;
+  note?: string;
+}): Promise<FeishuSendResult | null> {
+  const cards = buildFeishuMarkdownTableCards(params.text, {
+    header: resolveNativeTableCardHeader(params.header),
+    note: params.note,
+  });
+  if (!cards) {
+    return null;
+  }
+
+  let sentAny = false;
+  let lastResult: FeishuSendResult | null = null;
+  const sentResults: FeishuSendResult[] = [];
+  try {
+    for (const card of cards) {
+      lastResult = await sendCardFeishu({
+        cfg: params.cfg,
+        to: params.to,
+        card: card.card,
+        replyToMessageId: params.replyToMessageId,
+        replyInThread: params.replyInThread,
+        allowTopLevelReplyFallback: params.allowTopLevelReplyFallback,
+        accountId: params.accountId,
+        recoverableText: card.recoverableText,
+      });
+      sentResults.push(lastResult);
+      sentAny = true;
+    }
+  } catch (err) {
+    if (sentAny) {
+      throw new OutboundDeliveryError("Feishu native table card send partially failed", {
+        cause: err,
+        results: sentResults.map((result) => ({
+          channel: "feishu" as const,
+          messageId: result.messageId,
+          chatId: result.chatId,
+          receipt: result.receipt,
+        })),
+        stage: "platform_send",
+      });
+    }
+    return sendMessageFeishu({
+      cfg: params.cfg,
+      to: params.to,
+      text: params.fallbackText ?? params.text,
+      replyToMessageId: params.replyToMessageId,
+      replyInThread: params.replyInThread,
+      allowTopLevelReplyFallback: params.allowTopLevelReplyFallback,
+      mentions: params.mentions,
+      accountId: params.accountId,
+    });
+  }
+  return lastResult;
+}
 
 /**
  * Build a Feishu interactive card with optional header and note footer.
@@ -793,6 +1212,23 @@ export async function sendStructuredCardFeishu(params: {
   if (mentions && mentions.length > 0) {
     cardText = buildMentionedCardContent(mentions, text);
   }
+  const nativeTableResult = await sendNativeMarkdownTableCardsFeishu({
+    cfg,
+    to,
+    text: cardText,
+    fallbackText: text,
+    replyToMessageId,
+    replyInThread,
+    allowTopLevelReplyFallback,
+    mentions,
+    accountId,
+    header,
+    note,
+  });
+  if (nativeTableResult) {
+    return nativeTableResult;
+  }
+  cardText = convertFeishuMarkdownTablesForDelivery(cfg, cardText, accountId);
   const card = buildStructuredCard(cardText, { header, note });
   return sendCardFeishu({
     cfg,
@@ -802,6 +1238,7 @@ export async function sendStructuredCardFeishu(params: {
     replyInThread,
     allowTopLevelReplyFallback,
     accountId,
+    recoverableText: cardText,
   });
 }
 
@@ -835,6 +1272,21 @@ export async function sendMarkdownCardFeishu(params: {
   if (mentions && mentions.length > 0) {
     cardText = buildMentionedCardContent(mentions, text);
   }
+  const nativeTableResult = await sendNativeMarkdownTableCardsFeishu({
+    cfg,
+    to,
+    text: cardText,
+    fallbackText: text,
+    replyToMessageId,
+    replyInThread,
+    allowTopLevelReplyFallback,
+    mentions,
+    accountId,
+  });
+  if (nativeTableResult) {
+    return nativeTableResult;
+  }
+  cardText = convertFeishuMarkdownTablesForDelivery(cfg, cardText, accountId);
   const card = buildMarkdownCard(cardText);
   return sendCardFeishu({
     cfg,
@@ -844,5 +1296,6 @@ export async function sendMarkdownCardFeishu(params: {
     replyInThread,
     allowTopLevelReplyFallback,
     accountId,
+    recoverableText: cardText,
   });
 }

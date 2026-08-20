@@ -16,6 +16,7 @@ import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { resolveConfiguredHttpTimeoutMs } from "./client-timeout.js";
 import { createFeishuClient } from "./client.js";
 import { resolveFeishuIdentityEmoji } from "./identity-header.js";
+import { containsFeishuMarkdownTable } from "./markdown-table-card.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
 import type { MentionTarget } from "./mention-target.types.js";
 import {
@@ -33,7 +34,7 @@ import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } 
 
 /** Detect if text contains markdown elements that benefit from card rendering */
 function shouldUseCard(text: string): boolean {
-  return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+  return /```[\s\S]*?```/.test(text) || containsFeishuMarkdownTable(text);
 }
 
 function mergeStreamingFinalText(
@@ -257,7 +258,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     fallbackLimit: 4000,
   });
   const chunkMode = core.channel.text.resolveChunkMode(cfg, "feishu");
-  const tableMode = core.channel.text.resolveMarkdownTableMode({ cfg, channel: "feishu" });
+  const tableMode = core.channel.text.resolveMarkdownTableMode({
+    cfg,
+    channel: "feishu",
+    accountId: account.accountId,
+  });
   const renderMode = account.config?.renderMode ?? "auto";
   const streamingEnabled = account.config?.streaming !== false && renderMode !== "raw";
   const coreBlockStreamingEnabled = account.config?.blockStreaming === true;
@@ -298,6 +303,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     return `> 💭 **Thinking**\n${lines.join("\n")}`;
   };
 
+  const hasMarkdownTable = (text: string): boolean => containsFeishuMarkdownTable(text);
+
   const buildCombinedStreamText = (thinking: string, answer: string): string => {
     const parts: string[] = [];
     if (thinking) {
@@ -320,7 +327,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       if (streamingStartPromise) {
         await streamingStartPromise;
       }
-      if (streaming?.isActive()) {
+      if (streaming?.isActive() && !hasMarkdownTable(combined)) {
         await streaming.update(combined);
       }
     });
@@ -388,6 +395,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               appId: account.appId,
               appSecret: account.appSecret,
               domain: account.domain,
+              accountId: account.accountId,
               httpTimeoutMs: resolveConfiguredHttpTimeoutMs(account),
             }
           : null;
@@ -449,7 +457,32 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         statusLine = "";
         const text = buildCombinedStreamText(reasoningText, streamText);
         const finalNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
-        const contentVisible = await streaming.close(text, { note: finalNote });
+        if (hasMarkdownTable(text)) {
+          await streaming.discard();
+          await sendStructuredCardFeishu({
+            cfg,
+            to: sendTarget,
+            text,
+            replyToMessageId: sendReplyToMessageId,
+            replyInThread: effectiveReplyInThread,
+            allowTopLevelReplyFallback,
+            accountId,
+            header: resolveCardHeader(agentId, identity),
+            note: finalNote,
+          });
+          markVisibleReplySent();
+          if (streamText) {
+            deliveredFinalTexts.add(streamText);
+            if (options?.markClosedForReply !== false && !streamingCloseErroredForReply) {
+              streamingClosedForReply = true;
+            }
+          }
+          return;
+        }
+        const contentVisible = await streaming.close(
+          core.channel.text.convertMarkdownTables(text, tableMode),
+          { note: finalNote },
+        );
         // Track the raw streamed text so the duplicate-final check in deliver()
         // can skip the redundant text delivery that arrives after onIdle closes
         // the streaming card.
@@ -501,16 +534,20 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     infoKind?: string;
     sendChunk: (params: { chunk: string; isFirst: boolean }) => Promise<void>;
   }) => {
-    const chunkSource = paramsLocal.useCard
+    const useNativeTableCard = paramsLocal.useCard && hasMarkdownTable(paramsLocal.text);
+    const chunkSource = useNativeTableCard
       ? paramsLocal.text
       : core.channel.text.convertMarkdownTables(paramsLocal.text, tableMode);
-    const chunkText = paramsLocal.useCard
-      ? core.channel.text.chunkMarkdownTextWithMode
-      : core.channel.text.chunkTextWithMode;
-    const chunks = resolveTextChunksWithFallback(
-      chunkSource,
-      chunkText(chunkSource, textChunkLimit, chunkMode),
-    );
+    const chunkText =
+      paramsLocal.useCard && typeof core.channel.text.chunkMarkdownTextWithMode === "function"
+        ? core.channel.text.chunkMarkdownTextWithMode
+        : core.channel.text.chunkTextWithMode;
+    const chunks = useNativeTableCard
+      ? [chunkSource]
+      : resolveTextChunksWithFallback(
+          chunkSource,
+          chunkText(chunkSource, textChunkLimit, chunkMode),
+        );
     for (const [index, chunk] of chunks.entries()) {
       await paramsLocal.sendChunk({
         chunk,

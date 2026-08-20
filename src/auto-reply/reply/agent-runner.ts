@@ -259,6 +259,20 @@ function hasSuccessfulSourceReplyDelivery(params: {
   );
 }
 
+function hasImplicitMessageToolSourceReplyDelivery(params: {
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  messagingToolSentTargets?: unknown[];
+}): boolean {
+  if (
+    Array.isArray(params.messagingToolSentTargets) &&
+    params.messagingToolSentTargets.length > 0
+  ) {
+    return false;
+  }
+  return hasVisibleCommittedMessagingToolDeliveryEvidence(params);
+}
+
 function hasSuccessfulTerminalSourceReplyDelivery(params: {
   blockReplyPipeline: {
     didStreamTerminalReply?: () => boolean;
@@ -1983,7 +1997,12 @@ export async function runReplyAgent(params: {
       messagingToolSentTargets: runResult.messagingToolSentTargets,
     });
     const committedMessagingToolSourceReplyDelivery =
-      hasCommittedSourceReplyDeliveryEvidence(runResult);
+      hasCommittedSourceReplyDeliveryEvidence(runResult) ||
+      hasImplicitMessageToolSourceReplyDelivery({
+        messagingToolSentTexts: runResult.messagingToolSentTexts,
+        messagingToolSentMediaUrls: runResult.messagingToolSentMediaUrls,
+        messagingToolSentTargets: runResult.messagingToolSentTargets,
+      });
     const successfulSideEffectDelivery =
       successfulSourceReplyDelivery ||
       committedMessagingToolSourceReplyDelivery ||
@@ -2025,11 +2044,8 @@ export async function runReplyAgent(params: {
           sessionCtx,
           cfg,
         });
-    if (
-      opts?.sourceReplyDeliveryMode === "message_tool_only" &&
-      committedMessagingToolSourceReplyDelivery
-    ) {
-      await opts.onObservedReplyDelivery?.();
+    if (committedMessagingToolSourceReplyDelivery) {
+      await opts?.onObservedReplyDelivery?.();
     }
     const currentMessageId = sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
     // A terminal fallback is built separately after normal payload filtering.

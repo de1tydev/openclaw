@@ -56,6 +56,7 @@ import { isMissingProviderAuthError } from "../../agents/model-auth.js";
 import { runWithModelFallback, isFallbackSummaryError } from "../../agents/model-fallback.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import {
+  buildConfiguredModelCatalog,
   isCliProvider,
   resolveModelRefFromString,
   resolvePersistedOverrideModelRef,
@@ -98,7 +99,7 @@ import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
-import type { VerboseLevel } from "../thinking.js";
+import { formatThinkingLevels, type VerboseLevel } from "../thinking.js";
 import {
   HEARTBEAT_TOKEN,
   isSilentReplyPrefixText,
@@ -1560,6 +1561,16 @@ function isReplyOperationRestartAbort(replyOperation?: ReplyOperation): boolean 
   return abortSignal?.aborted === true && isAgentRunRestartAbortReason(abortSignal.reason);
 }
 
+class UnsupportedCandidateThinkingLevelError extends Error {
+  readonly userMessage: string;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedCandidateThinkingLevelError";
+    this.userMessage = message;
+  }
+}
+
 function emitModelFallbackStepLifecycle(params: {
   runId: string;
   sessionKey?: string;
@@ -1706,6 +1717,7 @@ async function runAgentTurnWithFallbackInternal(
           ...runnableRun,
           config: runtimeConfig,
         };
+  const candidateThinkingCatalog = buildConfiguredModelCatalog({ cfg: runtimeConfig });
   const preserveUserFacingSessionState = shouldPreserveUserFacingSessionStateForInputProvenance(
     effectiveRun.inputProvenance,
   );
@@ -2290,11 +2302,21 @@ async function runAgentTurnWithFallbackInternal(
               cfg: runtimeConfig,
               provider,
               modelId: model,
-              level: params.followupRun.run.thinkLevel,
+              level: candidateRun.thinkLevel,
+              catalog: candidateThinkingCatalog,
               agentId: params.followupRun.run.agentId,
               sessionKey: params.followupRun.run.runtimePolicySessionKey ?? params.sessionKey,
               sessionEntry: params.getActiveSessionEntry(),
             });
+            if (
+              candidateRun.thinkLevelSource === "explicit" &&
+              candidateRun.thinkLevel &&
+              candidateThinkLevel !== candidateRun.thinkLevel
+            ) {
+              throw new UnsupportedCandidateThinkingLevelError(
+                `Thinking level "${candidateRun.thinkLevel}" is not supported for ${provider}/${model}. Use one of: ${formatThinkingLevels(provider, model, ", ", candidateThinkingCatalog)}.`,
+              );
+            }
             const candidateFastMode = resolveRunFastModeForFallbackCandidate({
               run: candidateRun,
               config: runtimeConfig,
@@ -3242,6 +3264,13 @@ async function runAgentTurnWithFallbackInternal(
       }
       break;
     } catch (err) {
+      if (err instanceof UnsupportedCandidateThinkingLevelError) {
+        params.replyOperation?.fail("run_failed", err);
+        return {
+          kind: "final",
+          payload: markAgentRunFailureReplyPayload({ text: err.userMessage }),
+        };
+      }
       if (err instanceof LiveSessionModelSwitchError) {
         liveModelSwitchRetries += 1;
         if (liveModelSwitchRetries > MAX_LIVE_SWITCH_RETRIES) {

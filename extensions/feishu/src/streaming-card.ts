@@ -15,17 +15,21 @@ import { getFeishuUserAgent } from "./client.js";
 import { requestFeishuApi } from "./comment-shared.js";
 import { readFeishuJsonResponse } from "./json-response.js";
 import { resolveFeishuCardTemplate, type CardHeaderConfig } from "./send.js";
+import { recordFeishuStreamingCardContent } from "./streaming-card-content-index.js";
 import type { FeishuDomain } from "./types.js";
 
 type Credentials = {
   appId: string;
   appSecret: string;
   domain?: FeishuDomain;
+  accountId?: string;
   httpTimeoutMs?: number;
 };
 type CardState = {
   cardId: string;
   messageId: string;
+  accountId?: string;
+  chatId?: string;
   sequence: number;
   currentText: string;
   sentText: string;
@@ -386,6 +390,8 @@ export class FeishuStreamingSession {
     this.state = {
       cardId,
       messageId: sendRes.data.message_id,
+      accountId: this.creds.accountId,
+      chatId: receiveIdType === "chat_id" ? receiveId : undefined,
       sequence: 1,
       currentText: "",
       sentText: "",
@@ -548,6 +554,15 @@ export class FeishuStreamingSession {
       );
       if (sent && this.state) {
         this.state.sentText = mergedText;
+        recordFeishuStreamingCardContent({
+          cardId: this.state.cardId,
+          messageId: this.state.messageId,
+          accountId: this.state.accountId,
+          chatId: this.state.chatId,
+          sequence: this.state.sequence,
+          text: mergedText,
+          log: this.log,
+        });
       }
     });
     await this.queue;
@@ -614,6 +629,15 @@ export class FeishuStreamingSession {
       if (sent) {
         this.state.sentText = text;
         visibleContentSent = Boolean(text.trim());
+        recordFeishuStreamingCardContent({
+          cardId: this.state.cardId,
+          messageId: this.state.messageId,
+          accountId: this.state.accountId,
+          chatId: this.state.chatId,
+          sequence: this.state.sequence,
+          text,
+          log: this.log,
+        });
       }
     }
 
@@ -655,6 +679,15 @@ export class FeishuStreamingSession {
       })
       .catch((e: unknown) => this.log?.(`Close failed: ${String(e)}`));
     const finalState = this.state;
+    recordFeishuStreamingCardContent({
+      cardId: finalState.cardId,
+      messageId: finalState.messageId,
+      accountId: finalState.accountId,
+      chatId: finalState.chatId,
+      sequence: finalState.sequence,
+      text: finalState.sentText,
+      log: this.log,
+    });
     this.state = null;
     this.pendingText = null;
 
