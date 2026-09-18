@@ -881,7 +881,7 @@ describe("handleFeishuMessage ACP routing", () => {
     });
   });
 
-  it("records auto-threaded Feishu group replies with the dispatcher target", async () => {
+  it("records thread-continued group replies with the dispatcher target when replyInThread is enabled", async () => {
     const runtime = createFeishuBotRuntime();
     const recordInboundSession = vi.fn(async () => undefined);
     runtime.channel.session.recordInboundSession = recordInboundSession;
@@ -907,6 +907,7 @@ describe("handleFeishuMessage ACP routing", () => {
               oc_group_chat: {
                 allow: true,
                 requireMention: false,
+                replyInThread: "enabled",
               },
             },
           },
@@ -933,7 +934,7 @@ describe("handleFeishuMessage ACP routing", () => {
     }>(recordInboundSession);
     expect(recordParams?.updateLastRoute).toMatchObject({
       to: "chat:oc_group_chat",
-      threadId: "msg-group-auto-thread",
+      threadId: "om_thread_root",
     });
   });
 
@@ -3877,7 +3878,7 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 
-  it("forces thread replies when inbound message contains thread_id", async () => {
+  it("keeps group replies top-level when replyInThread is disabled even with thread_id", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
 
     const cfg: ClawdbotConfig = {
@@ -3898,6 +3899,46 @@ describe("handleFeishuMessage command authorization", () => {
       sender: { sender_id: { open_id: "ou-thread-reply" } },
       message: {
         message_id: "msg-thread-reply",
+        chat_id: "oc-group",
+        chat_type: "group",
+        thread_id: "omt_topic_thread_reply",
+        message_type: "text",
+        content: JSON.stringify({ text: "thread content" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    const dispatcherOptions = mockCallArg<{ replyInThread?: boolean; threadReply?: boolean }>(
+      mockCreateFeishuReplyDispatcher,
+      0,
+      0,
+    );
+    expect(dispatcherOptions.replyInThread).toBe(false);
+    expect(dispatcherOptions.threadReply).toBe(false);
+  });
+
+  it("keeps group thread replies when replyInThread is enabled", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-group": {
+              requireMention: false,
+              groupSessionScope: "group",
+              replyInThread: "enabled",
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-thread-reply" } },
+      message: {
+        message_id: "msg-thread-reply-enabled",
         chat_id: "oc-group",
         chat_type: "group",
         thread_id: "omt_topic_thread_reply",

@@ -73,10 +73,16 @@ export function resolveFeishuGroupSession(params: {
     params;
   const normalizedThreadId = threadId?.trim();
   const normalizedRootId = rootId?.trim();
-  const threadReply = Boolean(normalizedThreadId || normalizedRootId);
-  const replyInThread =
-    (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled" ||
-    threadReply;
+  // replyInThread: "disabled" opts the group out of all thread-reply semantics,
+  // including the auto-detected threadReply from root_id/thread_id: quoting a
+  // message inside a thread then yields a top-level quote reply instead of
+  // following the thread.
+  const replyInThreadConfigured =
+    (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled";
+  const threadReply = replyInThreadConfigured
+    ? Boolean(normalizedThreadId || normalizedRootId)
+    : false;
+  const replyInThread = replyInThreadConfigured || threadReply;
   const legacyTopicSessionMode =
     groupConfig?.topicSessionMode ?? feishuCfg?.topicSessionMode ?? "disabled";
   const groupSessionScope: GroupSessionScope =
