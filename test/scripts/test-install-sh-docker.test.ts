@@ -998,6 +998,8 @@ describe("install-sh E2E runner", () => {
     );
     expect(script).toContain('timeout --kill-after=15s "${AGENT_TURN_TIMEOUT_SECONDS}s"');
     expect(script).toContain('\\"timeoutSeconds\\":${OPENAI_PROVIDER_TIMEOUT_SECONDS}');
+    expect(script).toContain('openclaw --profile "$profile" agent \\');
+    expect(script).not.toContain("\n    --local \\\n");
   });
 
   it("normalizes agent JSON when structured lifecycle diagnostics follow the result", () => {
@@ -1547,6 +1549,7 @@ chmod +x "$BUN_INSTALL/bin/openclaw"
     expect(releaseChecks).toContain("install_smoke_release_checks:");
     expect(releaseChecks).toContain("uses: ./.github/workflows/install-smoke.yml");
     expect(releaseChecks).toContain("run_bun_global_install_smoke: true");
+    expect(releaseChecks).toContain("update_baseline_version: 2026.7.1-2");
   });
 
   it("runs installer packaging from the trusted workflow revision against a nested candidate", () => {

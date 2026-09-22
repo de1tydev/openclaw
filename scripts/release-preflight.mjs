@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runManagedCommand } from "./lib/managed-child-process.mjs";
-import { parseReleaseVersion } from "./lib/npm-publish-plan.mjs";
+import { parseReleaseVersion } from "./lib/release-version.mjs";
 
 const parsedArgs = parseArgs(process.argv.slice(2));
 const fix = parsedArgs.fix;
@@ -71,14 +71,6 @@ const releaseTasks = [
     check: pnpmCommand("plugin-sdk:check-exports"),
   },
   {
-    id: "plugin-sdk-api",
-    name: "plugin SDK API baseline",
-    scopes: ["plugin-sdk"],
-    fix: pnpmCommand("plugin-sdk:api:gen"),
-    fixAfter: ["plugin-sdk-exports"],
-    check: pnpmCommand("plugin-sdk:api:check"),
-  },
-  {
     id: "plugin-sdk-surface",
     name: "plugin SDK surface budget",
     scopes: ["plugin-sdk"],
@@ -141,7 +133,7 @@ if (macosVersionErrors.length !== 0 || checkFailures.length !== 0) {
   }
   printCommandFailures(checkFailures);
   console.error(
-    "\nCorrect manual version metadata first. Run `pnpm release:prep` for intentional generated version/config/API changes, then commit the resulting files.",
+    "\nCorrect manual version metadata first. Run `pnpm release:prep` for intentional generated version/config changes, then commit the resulting files.",
   );
   process.exit(1);
 }

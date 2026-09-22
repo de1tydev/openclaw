@@ -19,6 +19,7 @@ import type {
   MessagingToolSend,
   MessagingToolSourceReplyPayload,
 } from "../../embedded-agent-messaging.types.js";
+import type { MemoryTurnProvenance } from "../../memory-turn-provenance.js";
 import type { AgentRunTimeoutPhase } from "../../run-timeout-attribution.js";
 import type { AgentRuntimePlan } from "../../runtime-plan/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -85,6 +86,7 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   agentHarnessTaskRuntimeScope?: AgentHarnessTaskRuntimeScope;
   /** Live observer called after wrapped tool outcomes are recorded. */
   onToolOutcome?: ToolOutcomeObserver;
+  memoryTurnProvenance?: MemoryTurnProvenance;
   /** Signals that the attempt's own run-timeout watchdog is active. */
   onAttemptTimeoutArmed?: () => void;
   /** Signals that this attempt's timeout has fired and must unwind promptly. */
@@ -226,6 +228,8 @@ export type EmbeddedRunAttemptResult = {
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
   heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
+  /** Native artifacts owned by the agent harness, restricted to toolMediaUrls. */
+  hostOwnedToolMediaUrls?: string[];
   toolAudioAsVoice?: boolean;
   toolTrustedLocalMedia?: boolean;
   hasToolMediaBlockReply?: boolean;

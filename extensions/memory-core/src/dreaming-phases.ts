@@ -9,6 +9,7 @@ import {
   parseUsageCountedSessionIdFromFileName,
   sessionPathForFile,
 } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
+import { isMemoryArtifactEligibleForAutomaticContext } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import {
   formatMemoryDreamingDay,
@@ -1229,6 +1230,15 @@ async function collectDailyIngestionBatches(params: {
     if (!raw) {
       continue;
     }
+    if (
+      !(await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir: params.workspaceDir,
+        relativePath,
+        content: raw,
+      }))
+    ) {
+      continue;
+    }
     const lines = stripManagedDailyDreamingLines(raw.split(/\r?\n/));
     const chunks = buildDailySnippetChunks(lines, perFileCap);
     const results: MemorySearchResult[] = [];
@@ -1391,6 +1401,16 @@ export async function seedHistoricalDailyMemorySignals(params: {
     if (!raw) {
       continue;
     }
+    if (
+      !(await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir: params.workspaceDir,
+        relativePath: entry.relativePath,
+        content: raw,
+      }))
+    ) {
+      skippedPaths.push(entry.filePath);
+      continue;
+    }
     const lines = stripManagedDailyDreamingLines(raw.split(/\r?\n/));
     const chunks = buildDailySnippetChunks(lines, perFileCap);
     const results: MemorySearchResult[] = [];
@@ -1441,6 +1461,20 @@ function entryAverageScore(entry: ShortTermRecallEntry): number {
   return signalCount > 0 ? Math.max(0, Math.min(1, entry.totalScore / signalCount)) : 0;
 }
 
+function parseDreamingTimestampMs(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function compareDreamingTimestampDesc(left: string, right: string): number {
+  const leftMs = parseDreamingTimestampMs(left);
+  const rightMs = parseDreamingTimestampMs(right);
+  if (leftMs === rightMs) {
+    return 0;
+  }
+  return rightMs > leftMs ? 1 : -1;
+}
+
 // Use the shared CJK-aware similarity helper so close-but-not-identical CJK
 // snippets do not slip past the dedupe threshold via the old ASCII-only path.
 function dedupeEntries(entries: ShortTermRecallEntry[], threshold: number): ShortTermRecallEntry[] {
@@ -1463,7 +1497,8 @@ function dedupeEntries(entries: ShortTermRecallEntry[], threshold: number): Shor
       ].toSorted();
       duplicate.conceptTags = uniqueStrings([...duplicate.conceptTags, ...entry.conceptTags]);
       duplicate.lastRecalledAt =
-        Date.parse(entry.lastRecalledAt) > Date.parse(duplicate.lastRecalledAt)
+        parseDreamingTimestampMs(entry.lastRecalledAt) >
+        parseDreamingTimestampMs(duplicate.lastRecalledAt)
           ? entry.lastRecalledAt
           : duplicate.lastRecalledAt;
       continue;
@@ -1703,7 +1738,7 @@ async function runLightDreaming(params: {
   });
   const rankedEntries = dedupeEntries(
     recentEntries.toSorted((a, b) => {
-      const byTime = Date.parse(b.lastRecalledAt) - Date.parse(a.lastRecalledAt);
+      const byTime = compareDreamingTimestampDesc(a.lastRecalledAt, b.lastRecalledAt);
       if (byTime !== 0) {
         return byTime;
       }

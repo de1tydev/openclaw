@@ -2038,6 +2038,12 @@ grep -qx -- "OPENCLAW_E2E_COMMAND_TIMEOUT=23s" "$TMPDIR/package-args"
         'openclaw_e2e_maybe_timeout "${OPENCLAW_E2E_NPM_INSTALL_TIMEOUT:-600s}" npm install -g',
       );
     }
+    expect(pluginCorrupt).toContain(
+      'openclaw_e2e_fixture_plugin_command node "$entry" -- plugins install "npm:@openclaw/demo-corrupt-plugin@0.0.1" --force',
+    );
+    expect(pluginCorrupt).toContain(
+      "openclaw_e2e_print_log /tmp/openclaw-corrupt-plugin-install.log",
+    );
   });
 
   it("keeps upgrade survivor mutable state off the host-mounted artifact tree", () => {
@@ -2317,6 +2323,24 @@ fi
     const runner = readFileSync(UPGRADE_SURVIVOR_DOCKER_E2E_PATH, "utf8");
     const publishedRunner = readFileSync(UPGRADE_SURVIVOR_RUN_SCRIPT, "utf8");
     const updateRestartAuth = readFileSync(UPGRADE_SURVIVOR_UPDATE_RESTART_AUTH_PATH, "utf8");
+
+    expect(updateRestartAuth).toContain(
+      'config-parking.mjs \\\n    park-restart-probe "$OPENCLAW_CONFIG_PATH"',
+    );
+    const updateIndex = runner.indexOf('openclaw "${update_args[@]}"');
+    const restoreIndex = runner.indexOf(
+      'config-parking.mjs restore "$OPENCLAW_CONFIG_PATH"',
+      updateIndex,
+    );
+    const reloadIndex = runner.indexOf(
+      "systemctl --user restart openclaw-gateway.service",
+      restoreIndex,
+    );
+    const assertIndex = runner.indexOf("assertions.mjs assert-config", reloadIndex);
+    expect(updateIndex).toBeGreaterThan(-1);
+    expect(restoreIndex).toBeGreaterThan(updateIndex);
+    expect(reloadIndex).toBeGreaterThan(restoreIndex);
+    expect(assertIndex).toBeGreaterThan(reloadIndex);
 
     expect(runner).toContain('source "$ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh"');
     expect(runner).toContain(
@@ -3400,6 +3424,15 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
     expect(dockerfile).toContain("procps");
   });
 
+  it("copies the pnpm lockfile into the runtime image before normalizing its permissions", () => {
+    const dockerfile = readFileSync("Dockerfile", "utf8");
+    const copy = "COPY --from=runtime-assets --chown=node:node /app/pnpm-lock.yaml .";
+    const chmod = "chmod a+r /app/pnpm-lock.yaml";
+
+    expect(dockerfile).toContain(copy);
+    expect(dockerfile.indexOf(copy)).toBeLessThan(dockerfile.indexOf(chmod));
+  });
+
   it("keeps onboarding Docker E2E resource-guarded", () => {
     const runner = readFileSync(ONBOARD_DOCKER_E2E_PATH, "utf8");
 
@@ -3936,6 +3969,8 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
     expect(runner).toContain("run_agent_turn_bg");
     expect(runner).toContain("wait_agent_turn_batch");
     expect(runner).toContain("agent_turn_outputs_include_billing_drift");
+    expect(runner).toContain('grep -Fq "EMBEDDED FALLBACK:" "$out_json"');
+    expect(runner).toContain("agent turn used embedded fallback instead of the profile Gateway");
     expect(runner).toContain("SKIP: Anthropic billing drift during installer agent tool smoke");
     expect(runner).not.toContain('run_agent_turn_bg "read proof"');
     expect(runner).toContain('run_agent_turn_bg "image write"');
@@ -4296,6 +4331,36 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
     expect(helper).not.toContain('require("node:readline")');
     expect(helper).not.toContain("fs.readFileSync");
     expect(helper).not.toContain('.split("\\n")');
+  });
+
+  it("accepts the image compatibility alias in installer E2E transcripts", () => {
+    const runner = readFileSync(INSTALL_E2E_RUNNER_PATH, "utf8");
+    const start = runner.indexOf("assert_session_used_tools() {");
+    const end = runner.indexOf("\nsession_jsonl_path()", start);
+    const helper = runner.slice(start, end);
+
+    expect(helper).toContain('spec.split("|").filter(Boolean)');
+    expect(helper).toContain("group.some((tool) => seen.has(tool))");
+    expect(runner).toContain(
+      'assert_session_used_tools "$profile" "$TURN4_SESSION_ID" "image|view_image" write',
+    );
+  });
+
+  it("exports SQLite-backed installer E2E sessions before scanning tools", () => {
+    const runner = readFileSync(INSTALL_E2E_RUNNER_PATH, "utf8");
+    const start = runner.indexOf("assert_session_used_tools() {");
+    const end = runner.indexOf("\nsession_jsonl_path()", start);
+    const helper = runner.slice(start, end);
+
+    expect(helper).toContain('jsonl="$(session_jsonl_path "$profile" "$session_id")"');
+    expect(helper).toContain('if [[ ! -f "$jsonl" ]]');
+    expect(helper).toContain('openclaw --profile "$profile" sessions export-trajectory');
+    expect(helper).toContain('--session-key "agent:main:explicit:${session_id}"');
+    expect(helper).toContain('--workspace "$export_workspace"');
+    expect(helper).toContain(
+      'jsonl="$export_workspace/.openclaw/trajectory-exports/scan/events.jsonl"',
+    );
+    expect(helper).toContain('rm -rf "$export_workspace"');
   });
 
   it("keeps OpenAI web search smoke on one gateway agent connection", () => {

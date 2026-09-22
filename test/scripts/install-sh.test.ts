@@ -1,6 +1,14 @@
 // Install Sh tests cover install sh script behavior.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,6 +53,30 @@ describe("install.sh", () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toBe("leaked=0\n");
+    } finally {
+      rmSync(tmp, { force: true, recursive: true });
+    }
+  });
+
+  it("removes a downloaded script temp file when remote execution fails", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-remote-cleanup-"));
+    const tempFile = join(tmp, "remote-script.sh");
+
+    try {
+      const result = runInstallShell(
+        [
+          "set -euo pipefail",
+          `source ${JSON.stringify(SCRIPT_PATH)}`,
+          'mktemp() { : > "$PROBE_PATH"; printf \'%s\\n\' "$PROBE_PATH"; }',
+          "download_file() { printf '#!/bin/bash\\nexit 42\\n' > \"$2\"; }",
+          'run_remote_bash "https://example.invalid/setup.sh"',
+        ].join("\n"),
+        { PROBE_PATH: tempFile },
+      );
+
+      expect(result.status).toBe(42);
+      expect(existsSync(tempFile)).toBe(false);
+      expect(script).not.toMatch(/\$\(\s*mktempfile\s*\)/);
     } finally {
       rmSync(tmp, { force: true, recursive: true });
     }
@@ -514,6 +546,7 @@ NODE
     expect(script).toContain('npm_config_has_raw_key npm "min-release-age"');
     expect(script).toContain('freshness_flag="--before=$(date -u');
     expect(script).toContain('cmd+=(--no-fund --no-audit "$freshness_flag" install -g "$spec")');
+    expect(script).not.toContain("NPM_SILENT_FLAG");
   });
 
   it("does not emit --before when raw user npmrc config contains min-release-age", () => {
@@ -1063,7 +1096,6 @@ NODE
           `HOME=${JSON.stringify(home)}`,
           `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
           "NPM_LOGLEVEL=error",
-          "NPM_SILENT_FLAG=",
           `run_npm_global_install openclaw@latest ${JSON.stringify(join(tmp, "install.log"))}`,
         ].join("\n"),
       );
@@ -1101,7 +1133,6 @@ NODE
           `HOME=${JSON.stringify(home)}`,
           `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
           "NPM_LOGLEVEL=error",
-          "NPM_SILENT_FLAG=",
           `run_npm_global_install openclaw@latest ${JSON.stringify(join(tmp, "install.log"))}`,
         ].join("\n"),
       );

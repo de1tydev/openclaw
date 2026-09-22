@@ -21,6 +21,7 @@ import {
   projectOpenAITools,
   reconcileOpenAICompletionsToolChoice,
   reconcileOpenAIResponsesToolChoice,
+  resolveOpenAIResponsesCacheParams,
   resolveAzureDeploymentNameFromMap,
   resolveOpenAIProjectedToolsStrictToolFlag,
   resolveOpenAIReasoningEffortForModel,
@@ -821,14 +822,17 @@ function isInvalidEncryptedContentError(error: unknown): boolean {
   if (!error || typeof error !== "object") {
     return false;
   }
-  const record = error as { code?: unknown; message?: unknown };
+  const record = error as { code?: unknown; message?: unknown; status?: unknown };
   if (record.code === "invalid_encrypted_content" || record.code === "thinking_signature_invalid") {
     return true;
   }
+  const message = typeof record.message === "string" ? record.message : "";
   return (
-    typeof record.message === "string" &&
-    (record.message.includes("invalid_encrypted_content") ||
-      record.message.includes("thinking_signature_invalid"))
+    message.includes("invalid_encrypted_content") ||
+    message.includes("thinking_signature_invalid") ||
+    // xAI reports this exact prose contract without an error code.
+    (record.status === 400 &&
+      message.toLowerCase().includes("could not decrypt the provided encrypted_content"))
   );
 }
 
@@ -2147,16 +2151,6 @@ function resolvePromptCacheKey(
   return clampOpenAIPromptCacheKey(options?.promptCacheKey ?? options?.sessionId);
 }
 
-function getPromptCacheRetention(
-  baseUrl: string | undefined,
-  cacheRetention: "short" | "long" | "none",
-) {
-  if (cacheRetention !== "long") {
-    return undefined;
-  }
-  return baseUrl?.includes("api.openai.com") ? "24h" : undefined;
-}
-
 function resolveOpenAIReasoningEffort(
   options: OpenAIResponsesOptions | undefined,
 ): OpenAIApiReasoningEffort {
@@ -2210,6 +2204,12 @@ function isOpenAICodexResponsesModel(model: Model): boolean {
     (model.api === "openai-chatgpt-responses" ||
       model.api === "openclaw-openai-responses-transport")
   );
+}
+
+function resolveOpenAIResponsesCachePolicyModel(model: Model): Model {
+  return model.api === "openclaw-openai-responses-transport"
+    ? { ...model, api: "openai-responses" }
+    : model;
 }
 
 function isNativeOpenAICodexResponsesBaseUrl(baseUrl?: string): boolean {
@@ -2373,7 +2373,11 @@ export function buildOpenAIResponsesParams(
     input: messages,
     stream: true,
     prompt_cache_key: promptCacheKey,
-    prompt_cache_retention: getPromptCacheRetention(model.baseUrl, cacheRetention),
+    ...resolveOpenAIResponsesCacheParams(
+      resolveOpenAIResponsesCachePolicyModel(model),
+      cacheRetention,
+      compat.supportsLongCacheRetention ?? true,
+    ),
     ...(isCodexResponses
       ? { instructions: resolveOpenAICodexResponsesInstructions(model, context) }
       : {}),
@@ -3688,6 +3692,7 @@ type OpenAIResponsesRequestParams = {
   instructions?: string;
   prompt_cache_key?: string;
   prompt_cache_retention?: "24h";
+  prompt_cache_options?: { ttl: "30m" };
   metadata?: Record<string, string>;
   store?: boolean;
   max_output_tokens?: number;
@@ -4544,6 +4549,7 @@ export const testing = {
   formatModelTransportDebugBaseUrl,
   buildResponsesFailedNoDetailsObservation,
   buildOpenAIResponsesReasoningReplayMetadata,
+  isInvalidEncryptedContentError,
   normalizeResponsesFailedEvent,
   prepareOpenAIResponsesReasoningItemForReplay,
   createResponsesStreamWithEncryptedContentRetry,

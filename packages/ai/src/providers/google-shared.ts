@@ -557,8 +557,11 @@ export function buildGoogleSimpleThinking<T extends GoogleApiType>(
   }
 
   const clampedReasoning = clampThinkingLevel(model, options.reasoning);
+  if (clampedReasoning === "off") {
+    return { enabled: false };
+  }
   const effort = (
-    clampedReasoning === "off" || clampedReasoning === "max" ? "high" : clampedReasoning
+    clampedReasoning === "max" ? "high" : clampedReasoning
   ) as ClampedGoogleThinkingLevel;
 
   if (
@@ -601,7 +604,11 @@ export function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(
     return { thinkingLevel: mapThinkingLevel("LOW") };
   }
   if (isGemini3FlashModel(model)) {
-    return { thinkingLevel: mapThinkingLevel("MINIMAL") };
+    return {
+      thinkingLevel: mapThinkingLevel(
+        googleFlashSupportsMinimalThinking(model.id) ? "MINIMAL" : "LOW",
+      ),
+    };
   }
   if (config?.includeGemma4 && isGemma4Model(model)) {
     return { thinkingLevel: mapThinkingLevel("MINIMAL") };
@@ -621,6 +628,11 @@ function isGemini3ProModel<T extends GoogleApiType>(model: Model<T>): boolean {
 
 function isGemini3FlashModel<T extends GoogleApiType>(model: Model<T>): boolean {
   return /gemini-3(?:\.\d+)?-flash/.test(model.id.toLowerCase());
+}
+
+function googleFlashSupportsMinimalThinking(modelId: string): boolean {
+  const match = modelId.toLowerCase().match(/(?:^|\/)gemini-3\.(\d+)-flash(?:-|$)/);
+  return !match || Number.parseInt(match[1] ?? "0", 10) < 7;
 }
 
 function getGoogleThinkingLevel<T extends GoogleApiType>(
@@ -650,7 +662,9 @@ function getGoogleThinkingLevel<T extends GoogleApiType>(
   }
   switch (effort) {
     case "minimal":
-      return "MINIMAL";
+      return isGemini3FlashModel(model) && !googleFlashSupportsMinimalThinking(model.id)
+        ? "LOW"
+        : "MINIMAL";
     case "low":
       return "LOW";
     case "medium":

@@ -4199,9 +4199,11 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Prerequisites
   - H2: Containerized gateway
+  - H3: Headless bootstrap
   - H3: Manual flow
   - H3: Upgrading container images
   - H3: Environment variables
+  - H3: Source-built images with selected plugins
   - H3: Observability
   - H3: Health checks
   - H3: LAN vs loopback
@@ -4210,6 +4212,8 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Bonjour / mDNS
   - H3: Storage and persistence
   - H3: Shell helpers (optional)
+  - H3: Image contents and security scanning
+  - H3: Weekly image refreshes
   - H3: Running on a VPS?
   - H2: Agent sandbox
   - H3: Quick enable
@@ -7273,7 +7277,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Usage and cost tracking
   - H2: Getting started
-  - H2: Thinking defaults (Claude Sonnet 5, Mythos 5, Fable 5, 4.8, and 4.6)
+  - H2: Thinking defaults (Claude Opus 5, Sonnet 5, Mythos 5, Fable 5, 4.8, and 4.6)
   - H2: Safety refusal fallback (Claude Fable 5)
   - H3: Why this exists
   - H3: How it works

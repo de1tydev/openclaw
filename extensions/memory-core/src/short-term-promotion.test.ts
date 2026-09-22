@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import * as memoryProvenance from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -206,6 +207,50 @@ describe("short-term promotion", () => {
 
       expect(live).toHaveLength(2);
       expect(statSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("rejects newly quarantined sources when rehydrating a previously ranked promotion", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      await writeDailyMemoryNote(workspaceDir, "2026-04-03", ["Prefer concise replies."]);
+      await recordGroundedShortTermCandidates({
+        workspaceDir,
+        query: "preferences",
+        nowMs: Date.parse("2026-04-03T10:00:00Z"),
+        items: [
+          {
+            path: "memory/2026-04-03.md",
+            startLine: 1,
+            endLine: 1,
+            snippet: "Prefer concise replies.",
+            score: 0.95,
+            signalCount: 3,
+            query: "preferences",
+            dayBucket: "2026-04-03",
+          },
+        ],
+      });
+      const candidates = await rankShortTermPromotionCandidates({
+        workspaceDir,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+        nowMs: Date.parse("2026-04-03T10:00:00Z"),
+      });
+      expect(candidates.length).toBeGreaterThan(0);
+      vi.spyOn(memoryProvenance, "isMemoryArtifactEligibleForAutomaticContext").mockResolvedValue(
+        false,
+      );
+      const result = await applyShortTermPromotions({
+        workspaceDir,
+        candidates,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+        minScore: 0,
+        nowMs: Date.parse("2026-04-03T10:00:00Z"),
+      });
+      expect(result.applied).toBe(0);
+      await expect(fs.access(path.join(workspaceDir, "MEMORY.md"))).rejects.toThrow();
     });
   });
 
@@ -3548,6 +3593,10 @@ describe("short-term promotion", () => {
         const memoryPath = path.join(workspaceDir, "MEMORY.md");
         const seeded = "# Long-Term Memory\n\nSome small existing content.\n";
         await fs.writeFile(memoryPath, seeded, "utf-8");
+        if (process.platform !== "win32") {
+          await fs.chmod(workspaceDir, 0o750);
+          await fs.chmod(memoryPath, 0o640);
+        }
 
         await recordShortTermRecalls({
           workspaceDir,
@@ -3585,6 +3634,98 @@ describe("short-term promotion", () => {
         expect(applied.compactedDates).toEqual([]);
         const memoryText = await fs.readFile(memoryPath, "utf-8");
         expect(memoryText).toContain("Some small existing content.");
+        if (process.platform !== "win32") {
+          expect((await fs.stat(workspaceDir)).mode & 0o7777).toBe(0o750);
+          expect((await fs.stat(memoryPath)).mode & 0o7777).toBe(0o640);
+        }
+      });
+    });
+  });
+  describe("MEMORY.md atomic promotion write", () => {
+    it("preserves the existing MEMORY.md when the promotion write fails mid-flight", async () => {
+      await withTempWorkspace(async (workspaceDir) => {
+        await writeDailyMemoryNote(workspaceDir, "2026-04-29", [
+          "Notes",
+          "",
+          "Rotate the staging Postgres credentials before next deploy.",
+        ]);
+
+        const memoryPath = path.join(workspaceDir, "MEMORY.md");
+        const sentinel = "FINAL-USER-MEMORY-SENTINEL-do-not-lose";
+        const filler = "pad line filler content ".repeat(9_000);
+        const seeded = `# Long-Term Memory\n\n${filler}\n- ${sentinel}\n`;
+        await fs.writeFile(memoryPath, seeded, "utf-8");
+
+        await recordShortTermRecalls({
+          workspaceDir,
+          query: "rotate creds",
+          nowMs: Date.parse("2026-04-29T10:00:00.000Z"),
+          results: [
+            {
+              path: "memory/2026-04-29.md",
+              startLine: 3,
+              endLine: 3,
+              score: 0.96,
+              snippet: "Rotate the staging Postgres credentials before next deploy.",
+              source: "memory",
+            },
+          ],
+        });
+
+        const ranked = await rankShortTermPromotionCandidates({
+          workspaceDir,
+          minScore: 0,
+          minRecallCount: 0,
+          minUniqueQueries: 0,
+        });
+
+        const truncateAt = 51_200;
+        const originalWriteFile = fs.writeFile.bind(fs);
+        vi.spyOn(fs, "writeFile").mockImplementation((async (
+          target: Parameters<typeof fs.writeFile>[0],
+          data: Parameters<typeof fs.writeFile>[1],
+          options?: Parameters<typeof fs.writeFile>[2],
+        ) => {
+          const targetPath =
+            typeof target === "string" ? target : target instanceof URL ? target.pathname : "";
+          if (targetPath && path.basename(targetPath).startsWith("MEMORY.md")) {
+            const text =
+              typeof data === "string" ? data : Buffer.from(data as Uint8Array).toString();
+            await originalWriteFile(target, text.slice(0, truncateAt), options);
+            throw Object.assign(new Error("EFBIG: file too large, write"), {
+              code: "EFBIG",
+            });
+          }
+          return originalWriteFile(target, data, options);
+        }) as typeof fs.writeFile);
+
+        await expect(
+          applyShortTermPromotions({
+            workspaceDir,
+            candidates: ranked,
+            minScore: 0,
+            minRecallCount: 0,
+            minUniqueQueries: 0,
+            nowMs: Date.parse("2026-04-29T10:00:00.000Z"),
+            memoryFileMaxChars: 5_000_000,
+          }),
+        ).rejects.toMatchObject({ code: "EFBIG" });
+
+        const after = await fs.readFile(memoryPath, "utf-8");
+        expect(after).toBe(seeded);
+        await expect(
+          rankShortTermPromotionCandidates({
+            workspaceDir,
+            minScore: 0,
+            minRecallCount: 0,
+            minUniqueQueries: 0,
+          }),
+        ).resolves.toHaveLength(1);
+        expect(
+          (await fs.readdir(workspaceDir)).filter((entry) =>
+            entry.startsWith("MEMORY.md.promotion"),
+          ),
+        ).toEqual([]);
       });
     });
   });

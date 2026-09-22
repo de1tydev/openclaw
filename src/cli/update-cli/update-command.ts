@@ -193,8 +193,6 @@ import { suppressDeprecations } from "./suppress-deprecations.js";
 
 const CLI_NAME = resolveCliName();
 const SERVICE_REFRESH_TIMEOUT_MS = 60_000;
-const POST_REFRESH_ALREADY_HEALTHY_ATTEMPTS = 10;
-const POST_REFRESH_ALREADY_HEALTHY_DELAY_MS = 500;
 const DEFAULT_UPDATE_STEP_TIMEOUT_MS = 30 * 60_000;
 const POST_CORE_UPDATE_ENV = "OPENCLAW_UPDATE_POST_CORE";
 const POST_CORE_UPDATE_CHANNEL_ENV = "OPENCLAW_UPDATE_POST_CORE_CHANNEL";
@@ -1146,6 +1144,7 @@ async function maybeStopManagedServiceBeforeMutableUpdate(params: {
   root: string;
   shouldRestart: boolean;
   jsonMode: boolean;
+  onStopped?: (state: PreManagedServiceStop) => void;
 }): Promise<PreManagedServiceStop> {
   let service: ReturnType<typeof resolveGatewayService>;
   let serviceState: Awaited<ReturnType<typeof readGatewayServiceState>>;
@@ -1280,6 +1279,26 @@ async function maybeStopManagedServiceBeforeMutableUpdate(params: {
     await service.stop({
       env: serviceState.env,
       stdout: serviceControlStdoutForMode(params.jsonMode),
+      // launchd can unload the job before its port-release validation fails.
+      onMutation: () =>
+        params.onStopped?.({
+          stopped: true,
+          inspected: true,
+          runtimeInspected: true,
+          running: true,
+          ...serviceOwnership,
+          serviceEnv: serviceState.env,
+          ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
+        }),
+    });
+    params.onStopped?.({
+      stopped: true,
+      inspected: true,
+      runtimeInspected: true,
+      running: true,
+      ...serviceOwnership,
+      serviceEnv: serviceState.env,
+      ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
     });
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);
@@ -1303,6 +1322,17 @@ async function maybeStopManagedServiceBeforeMutableUpdate(params: {
       if (windowsTaskAutoStartRecovery.interrupted()) {
         throw new UpdateCommandAbort();
       }
+    }
+    const runtimeAfterFailure = await service.readRuntime(serviceState.env).catch(() => undefined);
+    if (runtimeAfterFailure?.status === "stopped") {
+      params.onStopped?.({
+        stopped: true,
+        inspected: true,
+        runtimeInspected: true,
+        running: true,
+        ...serviceOwnership,
+        serviceEnv: serviceState.env,
+      });
     }
     throw err;
   }
@@ -1674,6 +1704,7 @@ async function runUpdatedInstallGatewayRestart(params: {
   invocationCwd?: string;
   env?: NodeJS.ProcessEnv;
   nodeRunner?: string;
+  timeoutMs: number;
 }): Promise<boolean> {
   const entrypoint = await resolveGatewayInstallEntrypoint(params.result.root);
   if (!entrypoint) {
@@ -1691,7 +1722,7 @@ async function runUpdatedInstallGatewayRestart(params: {
     {
       cwd: params.result.root,
       env: resolveUpdatedInstallCommandEnv(params.env ?? process.env, params.invocationCwd),
-      timeoutMs: SERVICE_REFRESH_TIMEOUT_MS,
+      timeoutMs: params.timeoutMs,
     },
   );
   if (res.code === 0) {
@@ -2570,6 +2601,7 @@ async function maybeRestartService(params: {
   nodeRunner?: string;
   skipLegacyServiceRestart?: boolean;
   requireRunningServiceAfterRestart?: boolean;
+  timeoutMs: number;
 }): Promise<boolean> {
   const verifyRestartedGateway = async (
     expectedGatewayVersion: string | undefined,
@@ -2583,6 +2615,7 @@ async function maybeRestartService(params: {
           invocationCwd: params.invocationCwd,
           env: params.serviceEnv,
           nodeRunner: params.nodeRunner,
+          timeoutMs: params.timeoutMs,
         });
         return;
       }
@@ -2597,6 +2630,7 @@ async function maybeRestartService(params: {
       expectedVersion: expectedGatewayVersion,
       env: params.serviceEnv,
       requireRunningService: opts.requireRunningService,
+      timeoutMs: params.timeoutMs,
     });
     if (!health.healthy && health.staleGatewayPids.length > 0) {
       if (!params.opts.json) {
@@ -2614,6 +2648,7 @@ async function maybeRestartService(params: {
         expectedVersion: expectedGatewayVersion,
         env: params.serviceEnv,
         requireRunningService: opts.requireRunningService,
+        timeoutMs: params.timeoutMs,
       });
     }
 
@@ -2716,8 +2751,7 @@ async function maybeRestartService(params: {
               port: params.gatewayPort,
               expectedVersion: expectedGatewayVersion,
               env: params.serviceEnv,
-              attempts: POST_REFRESH_ALREADY_HEALTHY_ATTEMPTS,
-              delayMs: POST_REFRESH_ALREADY_HEALTHY_DELAY_MS,
+              timeoutMs: params.timeoutMs,
             });
             refreshedGatewayAlreadyHealthy = health.healthy;
             if (refreshedGatewayAlreadyHealthy && !params.opts.json) {
@@ -2759,6 +2793,7 @@ async function maybeRestartService(params: {
           invocationCwd: params.invocationCwd,
           env: params.serviceEnv,
           nodeRunner: params.nodeRunner,
+          timeoutMs: params.timeoutMs,
         });
         if (
           updatedInstallRestartNeedsServiceRootProof &&
@@ -4178,6 +4213,9 @@ async function updateCommandInternal(
           root: mutationRoot,
           shouldRestart,
           jsonMode: Boolean(opts.json),
+          onStopped: (state) => {
+            preManagedServiceStop = state;
+          },
         });
         if (preManagedServiceStop.windowsTaskAutoStartRecovery) {
           recoveryState.windowsTaskAutoStartRecovery =
@@ -4195,6 +4233,10 @@ async function updateCommandInternal(
         }
       }
     } catch (err) {
+      await maybeRestartServiceAfterFailedMutableUpdate({
+        preManagedServiceStop,
+        jsonMode: Boolean(opts.json),
+      });
       if (err instanceof UpdateCommandAbort) {
         throw err;
       }
@@ -4626,6 +4668,7 @@ async function updateCommandInternal(
     skipLegacyServiceRestart,
     requireRunningServiceAfterRestart:
       resultWithPostUpdate.mode === "git" && preManagedServiceStop?.stopped === true,
+    timeoutMs: updateStepTimeoutMs,
   });
   if (!restartOk) {
     await markControlPlaneUpdateRestartSentinelFailureBestEffort({

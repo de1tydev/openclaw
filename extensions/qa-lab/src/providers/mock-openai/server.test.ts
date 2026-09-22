@@ -753,6 +753,62 @@ describe("qa mock openai server", () => {
     expect(body).not.toContain("older-progress-target.txt");
   });
 
+  it("uses the current tool-progress turn output for a hidden final marker", async () => {
+    const server = await startMockServer();
+    const currentPrompt =
+      "Tool progress QA check: call the read tool exactly once on `QA_KICKOFF_TASK.md` before answering. The only valid final marker is inside that file.";
+    const final = await expectResponsesJson<{
+      output: Array<{ content?: Array<{ text?: string }> }>;
+    }>(server, {
+      stream: false,
+      input: [
+        makeUserInput(
+          "Tool progress QA check: read `stale-progress-target.txt`, then reply exactly `STALE_PROGRESS_OK`.",
+        ),
+        {
+          type: "function_call_output",
+          call_id: "call_stale_progress_read",
+          output: JSON.stringify({ text: "stale turn" }),
+        },
+        makeUserInput(currentPrompt),
+        makeUserInput(TEST_RUNTIME_CONTEXT_CARRIER),
+        {
+          type: "function_call_output",
+          call_id: "call_current_progress_read",
+          output: JSON.stringify({
+            text: "Matrix tool progress QA task.\nReply with only this exact marker and no other text:\nCURRENT_PROGRESS_OK",
+          }),
+        },
+      ],
+    });
+
+    expect(final.output[0]?.content?.[0]?.text).toBe("CURRENT_PROGRESS_OK");
+  });
+
+  it("does not recover tool-progress directives from an earlier user turn", async () => {
+    const server = await startMockServer();
+    const response = await postResponses(server, {
+      stream: true,
+      input: [
+        makeUserInput(
+          "Tool progress QA check: read `stale-progress-target.txt`, then reply exactly `STALE_PROGRESS_OK`.",
+        ),
+        {
+          type: "function_call_output",
+          call_id: "call_stale_progress_read",
+          output: JSON.stringify({ text: "stale turn" }),
+        },
+        makeUserInput("Summarize the current turn in one short sentence."),
+      ],
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain('"name":"read"');
+    expect(body).not.toContain("stale-progress-target.txt");
+    expect(body).not.toContain("STALE_PROGRESS_OK");
+  });
+
   it("prefers path-like refs over generic quoted keys in prompts", async () => {
     const server = await startQaMockOpenAiServer({
       host: "127.0.0.1",
@@ -4608,6 +4664,32 @@ describe("qa mock openai server", () => {
     expect(quiet.status).toBe(200);
     await expect(quiet.json()).resolves.toEqual({
       text: "Reply with only this exact marker: WHATSAPP_QA_AUDIO_TRANSCRIPT_OK",
+    });
+  });
+
+  it("serves deterministic Matrix voice preflight transcription for the request prompt", async () => {
+    const server = await startQaMockOpenAiServer({
+      host: "127.0.0.1",
+      port: 0,
+    });
+    cleanups.push(async () => {
+      await server.stop();
+    });
+
+    const response = await fetch(`${server.baseUrl}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: {
+        "content-type": "multipart/form-data; boundary=qa",
+      },
+      body:
+        '--qa\r\ncontent-disposition: form-data; name="file"; filename="audio.wav"\r\n\r\n' +
+        'fixture audio\r\n--qa\r\ncontent-disposition: form-data; name="prompt"\r\n\r\n' +
+        "MATRIX_QA_VOICE_PREFLIGHT_TRIGGER\r\n--qa--\r\n",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      text: "C3PLQA reply with only these words Matrix QA voice pre-flight OK.",
     });
   });
 

@@ -4009,6 +4009,87 @@ describe("openai transport stream", () => {
     expect(params.prompt_cache_key).toBeUndefined();
   });
 
+  it.each(["short", "long"] as const)(
+    "uses Astra's native 30-minute Responses cache option for %s retention",
+    (cacheRetention) => {
+      const params = buildOpenAIResponsesParams(
+        {
+          id: "gpt-6-astra",
+          name: "GPT-6 Astra",
+          api: "openai-responses",
+          provider: "openai",
+          baseUrl: "https://api.openai.com/v1",
+          reasoning: true,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 400000,
+          maxTokens: 128000,
+        } satisfies Model<"openai-responses">,
+        { systemPrompt: "system", messages: [], tools: [] } as never,
+        { sessionId: "astra-session", cacheRetention },
+      ) as Record<string, unknown>;
+
+      expect(params.prompt_cache_options).toEqual({ ttl: "30m" });
+      expect(params).not.toHaveProperty("prompt_cache_retention");
+    },
+  );
+
+  it("keeps Astra's native cache option after simple transport preparation", () => {
+    const model = attachModelProviderRequestTransport(
+      {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        api: "openai-responses",
+        provider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 400000,
+        maxTokens: 128000,
+      } satisfies Model<"openai-responses">,
+      {
+        proxy: {
+          mode: "explicit-proxy",
+          url: "http://proxy.internal:8443",
+        },
+      },
+    );
+    const prepared = prepareTransportAwareSimpleModel(model);
+
+    expect(prepared.api).toBe("openclaw-openai-responses-transport");
+    const params = buildOpenAIResponsesParams(
+      prepared,
+      { systemPrompt: "system", messages: [], tools: [] } as never,
+      { sessionId: "astra-session", cacheRetention: "long" },
+    ) as Record<string, unknown>;
+
+    expect(params.prompt_cache_options).toEqual({ ttl: "30m" });
+    expect(params).not.toHaveProperty("prompt_cache_retention");
+  });
+
+  it("keeps legacy long retention for Astra on custom Responses endpoints", () => {
+    const params = buildOpenAIResponsesParams(
+      {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        api: "openai-responses",
+        provider: "openai",
+        baseUrl: "https://proxy.example.com/v1",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 400000,
+        maxTokens: 128000,
+      } satisfies Model<"openai-responses">,
+      { systemPrompt: "system", messages: [], tools: [] } as never,
+      { sessionId: "astra-session", cacheRetention: "long" },
+    ) as Record<string, unknown>;
+
+    expect(params.prompt_cache_retention).toBe("24h");
+    expect(params).not.toHaveProperty("prompt_cache_options");
+  });
+
   it("adds fallback instructions for raw native Codex responses probes", () => {
     const params = buildOpenAIResponsesParams(
       {
@@ -5365,6 +5446,32 @@ describe("openai transport stream", () => {
         request.input[2],
       ],
     });
+  });
+
+  it.each([
+    {
+      label: "matches xAI's code-less encrypted-content 400",
+      status: 400,
+      message:
+        "Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.",
+      expected: true,
+    },
+    {
+      label: "rejects an unrelated decrypt 400",
+      status: 400,
+      message: "Could not decrypt encrypted_content metadata for the OAuth sidecar.",
+      expected: false,
+    },
+    {
+      label: "rejects the xAI phrase on a 500",
+      status: 500,
+      message: "Could not decrypt the provided encrypted_content.",
+      expected: false,
+    },
+  ])("$label", ({ status, message, expected }) => {
+    const error = OpenAI.APIError.generate(status, { error: message }, undefined, new Headers());
+
+    expect(testing.isInvalidEncryptedContentError(error)).toBe(expected);
   });
 
   it("normalizes overlong Copilot Responses replay tool ids before dispatch", () => {

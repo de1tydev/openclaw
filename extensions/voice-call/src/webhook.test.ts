@@ -166,6 +166,31 @@ function requireFirstMockCall(calls: readonly unknown[][], label: string): unkno
   return call;
 }
 
+function createCapturingLogger() {
+  const messages: string[] = [];
+  const capture = (message: string) => messages.push(message);
+  return {
+    messages,
+    logger: { info: capture, warn: capture, error: capture },
+  };
+}
+
+function expectPrivateLogMetadata(params: {
+  messages: readonly string[];
+  identifiers: readonly string[];
+  privateText: readonly string[];
+}) {
+  const output = params.messages.join(" ");
+  expect(output).toContain("[voice-call]");
+  expect(output).toContain("chars=");
+  for (const identifier of params.identifiers) {
+    expect(output).toContain(identifier);
+  }
+  for (const privateText of params.privateText) {
+    expect(output).not.toContain(privateText);
+  }
+}
+
 function expectWebhookUrl(url: string, expectedPath: string) {
   const parsed = new URL(url);
   expect(parsed.pathname).toBe(expectedPath);
@@ -1697,16 +1722,20 @@ describe("VoiceCallWebhookServer classic response routing", () => {
     const params = requireFirstMockCall(
       mocks.generateVoiceResponse.mock.calls,
       "classic voice response",
-    )[0] as { agentId?: string; voiceConfig?: VoiceCallConfig } | undefined;
+    )[0] as
+      | { agentId?: string; senderIsOwner?: boolean; voiceConfig?: VoiceCallConfig }
+      | undefined;
     expect(params?.voiceConfig?.agentId).toBe("top");
     expect(params?.agentId).toBe("support");
+    expect(params).toHaveProperty("senderIsOwner", undefined);
     expect(speak).toHaveBeenCalledWith(call.callId, "Hello back", {
       listenAfterPlayback: true,
     });
   });
 
-  it("does not replay a completed response after early playback", async () => {
+  it("marks inbound calls as non-owners and does not replay an early response", async () => {
     const call = createCall(Date.now());
+    call.direction = "inbound";
     const speak = vi.fn(async () => ({ success: true }));
     const manager = {
       getCall: (callId: string) => (callId === call.callId ? call : undefined),
@@ -1737,6 +1766,48 @@ describe("VoiceCallWebhookServer classic response routing", () => {
     expect(speak.mock.calls).toEqual([
       [call.callId, "Spoken before compaction. Final detail.", { listenAfterPlayback: true }],
     ]);
+    expect(mocks.generateVoiceResponse.mock.calls[0]?.[0]).toHaveProperty("senderIsOwner", false);
+  });
+
+  it("logs only char counts for inbound user text, early AI text, and final AI text", async () => {
+    const call = createCall(Date.now());
+    const speak = vi.fn(async () => ({ success: true }));
+    const manager = {
+      getCall: (callId: string) => (callId === call.callId ? call : undefined),
+      speak,
+    } as unknown as CallManager;
+
+    const { logger, messages } = createCapturingLogger();
+
+    const server = new VoiceCallWebhookServer(
+      createConfig({ agentId: "main" }),
+      manager,
+      provider,
+      {} as never,
+      undefined,
+      {} as never,
+      logger,
+    );
+
+    const userMessage = "sensitive user speech content";
+    const earlyText = "confidential early AI response";
+    const finalText = "private final AI response";
+    mocks.generateVoiceResponse.mockReset().mockImplementationOnce(async (params) => {
+      await params?.onEarlyText?.(earlyText);
+      return { text: finalText, deliveredEarly: false };
+    });
+
+    await (
+      server as unknown as {
+        handleInboundResponse: (callId: string, message: string) => Promise<void>;
+      }
+    ).handleInboundResponse(call.callId, userMessage);
+
+    expectPrivateLogMetadata({
+      messages,
+      identifiers: [call.callId],
+      privateText: [userMessage, earlyText, finalText],
+    });
   });
 });
 
@@ -1929,10 +2000,11 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
       config: {
         onSpeechStart?: (providerCallId: string) => void;
         onTranscript?: (providerCallId: string, transcript: string) => void;
+        onPartialTranscript?: (providerCallId: string, partial: string) => void;
       };
     };
 
-  it("logs streaming transcripts without splitting UTF-16 surrogate pairs", async () => {
+  it("logs transcript counts without logging transcript content", async () => {
     const manager = {
       getActiveCalls: () => [],
       getCallByProviderCallId: vi.fn(() => undefined),
@@ -1952,24 +2024,33 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
         },
       },
     });
-    const server = new VoiceCallWebhookServer(config, manager, createTwilioProvider(vi.fn()));
+
+    const { logger, messages } = createCapturingLogger();
+
+    const server = new VoiceCallWebhookServer(
+      config,
+      manager,
+      createTwilioProvider(vi.fn()),
+      undefined,
+      undefined,
+      undefined,
+      logger,
+    );
     await server.start();
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
       const transcript = `${"a".repeat(199)}\uD83D\uDE80tail`;
-      getMediaCallbacks(server).config.onTranscript?.("CA-utf16", transcript);
+      const partialText = "user is saying something sensitive";
+      const callbacks = getMediaCallbacks(server).config;
+      callbacks.onTranscript?.("CA-utf16", transcript);
+      callbacks.onPartialTranscript?.("CA-partial", partialText);
 
-      const transcriptLog = logSpy.mock.calls
-        .map(([message]) => String(message))
-        .find((message) => message.includes("Transcript for CA-utf16"));
-      expect(transcriptLog).toContain(`${"a".repeat(199)}...`);
-      expect(transcriptLog).not.toContain("\uD83D");
-      expect(transcriptLog).not.toContain("\uDE80");
+      expectPrivateLogMetadata({
+        messages,
+        identifiers: ["CA-utf16", "CA-partial"],
+        privateText: [transcript, partialText],
+      });
     } finally {
-      logSpy.mockRestore();
-      warnSpy.mockRestore();
       await server.stop();
     }
   });

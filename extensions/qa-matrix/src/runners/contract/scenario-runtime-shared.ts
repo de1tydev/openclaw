@@ -2,7 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { createMatrixQaClient, type MatrixQaRoomObserver } from "../../substrate/client.js";
 import type { MatrixQaObservedEvent } from "../../substrate/events.js";
-import type { MatrixQaFaultProxyObserver } from "../../substrate/fault-proxy.js";
+import type {
+  MatrixQaFaultProxyObserver,
+  MatrixQaFaultProxyRule,
+  MatrixQaFaultProxyRuleHandle,
+} from "../../substrate/fault-proxy.js";
 import { createMatrixQaRoomObserver } from "../../substrate/sync.js";
 import type { MatrixQaProvisionedTopology } from "../../substrate/topology.js";
 import { resolveMatrixQaScenarioRoomId } from "./scenario-catalog.js";
@@ -26,6 +30,7 @@ export type MatrixQaScenarioContext = {
   driverUserId: string;
   faultProxyObserver?: MatrixQaFaultProxyObserver;
   faultProxyTargetBaseUrl?: string;
+  installFaultRule?: (rule: MatrixQaFaultProxyRule) => MatrixQaFaultProxyRuleHandle;
   observedEvents: MatrixQaObservedEvent[];
   observerAccessToken: string;
   observerDeviceId?: string;
@@ -193,6 +198,7 @@ export function buildMatrixReplyArtifact(
     eventId: event.eventId,
     mentions: event.mentions,
     relatesTo: event.relatesTo,
+    replacesEventId: event.replacesEventId,
     sender: event.sender,
     ...(token ? { tokenMatched: doesMatrixQaReplyBodyMatchToken(event, token) } : {}),
   };
@@ -205,6 +211,7 @@ export function buildMatrixReplyDetails(label: string, artifact: MatrixQaReplyAr
       artifact.tokenMatched === undefined ? "n/a" : artifact.tokenMatched ? "yes" : "no"
     }`,
     `${label} rel_type: ${artifact.relatesTo?.relType ?? "<none>"}`,
+    `${label} replaces: ${artifact.replacesEventId ?? "<none>"}`,
     `${label} in_reply_to: ${artifact.relatesTo?.inReplyToId ?? "<none>"}`,
     `${label} is_falling_back: ${artifact.relatesTo?.isFallingBack === true ? "true" : "false"}`,
   ];

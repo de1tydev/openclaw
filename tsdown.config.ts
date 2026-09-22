@@ -11,6 +11,7 @@ import {
   pluginSdkEntrypoints,
   publicPluginSdkEntrypoints,
 } from "./scripts/lib/plugin-sdk-entries.mjs";
+import { createRuntimeDependencyOwnershipBuildPlugin } from "./scripts/lib/runtime-dependency-ownership-build-plugin.mts";
 import { tsdownPackageOutputRoot } from "./scripts/lib/tsdown-output-roots.mjs";
 
 type InputOptionsFactory = Extract<NonNullable<UserConfig["inputOptions"]>, Function>;
@@ -215,6 +216,10 @@ function shouldNeverBundleDependency(id: string): boolean {
   return explicitNeverBundleDependencies.some((dependency) => {
     return id === dependency || id.startsWith(`${dependency}/`);
   });
+}
+
+function shouldNeverBundleDeclarationDependency(id: string): boolean {
+  return shouldNeverBundleDependency(id) || id === "zod" || id.startsWith("zod/");
 }
 
 function shouldAlwaysBundleDependency(id: string): boolean {
@@ -787,11 +792,12 @@ const configs = [
     clean: true,
     dts: TSDOWN_DECLARATIONS,
     entry: buildUnifiedDistEntries(),
+    plugins: [createRuntimeDependencyOwnershipBuildPlugin()],
     deps: {
       alwaysBundle: shouldAlwaysBundleDependency,
       neverBundle: shouldNeverBundleDependency,
       // Keep dts generation from inlining externalized package types.
-      dts: { neverBundle: shouldNeverBundleDependency },
+      dts: { neverBundle: shouldNeverBundleDeclarationDependency },
     },
   }),
 ] satisfies UserConfig[];

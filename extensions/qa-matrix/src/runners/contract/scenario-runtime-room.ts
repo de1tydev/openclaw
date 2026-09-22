@@ -330,8 +330,7 @@ async function runMatrixStreamingPreviewScenario(
       event.roomId === context.roomId &&
       event.sender === context.sutUserId &&
       isMatrixQaMessageLikeKind(event.kind) &&
-      event.relatesTo?.relType === "m.replace" &&
-      event.relatesTo.eventId === preview.event.eventId &&
+      event.replacesEventId === preview.event.eventId &&
       event.body === params.finalText,
     roomId: context.roomId,
     since: preview.since,
@@ -385,7 +384,7 @@ function findMatrixQaUnexpectedWorkingEvents(params: {
     if (event.eventId === params.previewEventId || event.eventId === params.finalEventId) {
       return false;
     }
-    return event.relatesTo?.eventId !== params.previewEventId;
+    return event.replacesEventId !== params.previewEventId;
   });
 }
 
@@ -517,7 +516,7 @@ function buildMatrixQaToolProgressFinalTimeoutMessage(params: {
       ) {
         return false;
       }
-      return event.relatesTo?.eventId === params.previewEventId;
+      return event.replacesEventId === params.previewEventId;
     })
     .slice(-8);
   const candidateDetails =
@@ -554,6 +553,11 @@ async function runMatrixToolProgressScenario(
 ) {
   const { client, startSince } = await primeMatrixQaDriverScenarioClient(context);
   const startObservedIndex = context.observedEvents.length;
+  const preexistingEventIds = new Set(
+    context.observedEvents.slice(0, startObservedIndex).map((event) => event.eventId),
+  );
+  const isCurrentScenarioEvent = (event: MatrixQaObservedEvent) =>
+    !preexistingEventIds.has(event.eventId);
   await writeMatrixToolProgressTaskFile(context, params.finalText);
   const triggerBody = params.triggerBodyBuilder(context.sutUserId, params.finalText);
   const driverEventId = await client.sendTextMessage({
@@ -565,10 +569,9 @@ async function runMatrixToolProgressScenario(
     params.progressPattern.test(body ?? "") ||
     (params.allowGenericProgressLine === true && hasMatrixQaToolProgressPreviewLine(body));
   const getPreviewRootEventId = (event: MatrixQaObservedEvent) =>
-    event.relatesTo?.relType === "m.replace" && event.relatesTo.eventId
-      ? event.relatesTo.eventId
-      : event.eventId;
+    event.replacesEventId ?? event.eventId;
   const isFinalReply = (event: MatrixQaObservedEvent) =>
+    isCurrentScenarioEvent(event) &&
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     event.type === "m.room.message" &&
@@ -581,11 +584,14 @@ async function runMatrixToolProgressScenario(
       isMatrixQaMessageLikeKind(event.kind) &&
       matchesExpectedProgress(event.body));
   const isProgressEvent = (event: MatrixQaObservedEvent) =>
+    isCurrentScenarioEvent(event) &&
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     isExpectedProgressKind(event) &&
-    (matchesExpectedProgress(event.body) || event.relatesTo === undefined);
+    (matchesExpectedProgress(event.body) ||
+      (event.relatesTo === undefined && hasMatrixQaToolProgressPreviewLine(event.body)));
   const isProgressProofEvent = (event: MatrixQaObservedEvent) =>
+    isCurrentScenarioEvent(event) &&
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     isExpectedProgressKind(event) &&
@@ -594,15 +600,13 @@ async function runMatrixToolProgressScenario(
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     event.kind === params.expectedPreviewKind &&
-    event.relatesTo?.relType === "m.replace" &&
-    event.relatesTo.eventId === previewRootEventId &&
+    event.replacesEventId === previewRootEventId &&
     matchesExpectedProgress(event.body);
   const isFinalReplacement = (event: MatrixQaObservedEvent, previewRootEventId: string) =>
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     isMatrixQaMessageLikeKind(event.kind) &&
-    event.relatesTo?.relType === "m.replace" &&
-    event.relatesTo.eventId === previewRootEventId &&
+    event.replacesEventId === previewRootEventId &&
     doesMatrixQaReplyBodyMatchToken(event, params.finalText);
   const throwProgressTimeout = (err: unknown, previewEventId: string): never => {
     throw new Error(
@@ -794,8 +798,7 @@ async function runMatrixToolProgressScenario(
           event.sender === context.sutUserId &&
           isMatrixQaMessageLikeKind(event.kind) &&
           doesMatrixQaReplyBodyMatchToken(event, params.finalText) &&
-          ((event.relatesTo?.relType === "m.replace" &&
-            event.relatesTo.eventId === previewRootEventId) ||
+          (event.replacesEventId === previewRootEventId ||
             (params.allowTopLevelFinalWithProgress === true && event.relatesTo === undefined)),
         roomId: context.roomId,
         since: progress.since,

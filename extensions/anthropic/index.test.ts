@@ -7,7 +7,7 @@ import {
   capturePluginRegistration,
   registerSingleProviderPlugin,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 const { readClaudeCliCredentialsForSetupMock, readClaudeCliCredentialsForRuntimeMock } = vi.hoisted(
   () => ({
@@ -92,6 +92,19 @@ describe("anthropic provider replay hooks", () => {
     });
   });
 
+  it("publishes Claude Opus 5 CLI metadata without downgrading its API contract", () => {
+    expect(
+      buildClaudeCliCatalogEntries().find((model) => model.id === "claude-opus-5"),
+    ).toMatchObject({
+      id: "claude-opus-5",
+      name: "Claude Opus 5 (Claude CLI)",
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      mediaInput: {
+        image: { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
+      },
+    });
+  });
   it("publishes Claude Sonnet 5 CLI metadata without downgrading its API contract", () => {
     expect(
       buildClaudeCliCatalogEntries().find((model) => model.id === "claude-sonnet-5"),
@@ -642,6 +655,8 @@ describe("anthropic provider replay hooks", () => {
   });
 
   it("resolves Claude Sonnet 5 with its exact API contract", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 7, 31));
+    onTestFinished(() => clock.mockRestore());
     const provider = await registerSingleProviderPlugin(anthropicPlugin);
     const resolved = provider.resolveDynamicModel?.({
       provider: "anthropic",

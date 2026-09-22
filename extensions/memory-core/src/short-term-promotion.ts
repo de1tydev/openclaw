@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
+import { isMemoryArtifactEligibleForAutomaticContext } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import {
   DEFAULT_MEMORY_DEEP_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS,
@@ -11,6 +12,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-status";
 import { appendMemoryHostEvent } from "openclaw/plugin-sdk/memory-host-events";
 import { sleep } from "openclaw/plugin-sdk/runtime-env";
+import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeStringEntries,
@@ -1295,10 +1297,19 @@ export async function loadShortTermPromotionDreamingStats(params: {
   };
 }
 
-async function shortTermRecallSourceIsFile(sourcePath: string): Promise<boolean> {
+async function shortTermRecallSourceIsFile(
+  workspaceDir: string,
+  sourcePath: string,
+): Promise<boolean> {
   try {
     const stat = await fs.stat(sourcePath);
-    return stat.isFile();
+    return (
+      stat.isFile() &&
+      (await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir,
+        relativePath: path.relative(workspaceDir, sourcePath).replaceAll(path.sep, "/"),
+      }))
+    );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
@@ -1321,7 +1332,7 @@ export async function filterLiveShortTermRecallEntries(params: {
     if (existing) {
       return existing;
     }
-    const check = shortTermRecallSourceIsFile(sourcePath);
+    const check = shortTermRecallSourceIsFile(workspaceDir, sourcePath);
     sourceFileChecks.set(sourcePath, check);
     return check;
   };
@@ -2290,6 +2301,16 @@ async function rehydratePromotionCandidate(
       throw err;
     }
 
+    if (
+      !(await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir,
+        relativePath: path.relative(workspaceDir, sourcePath).replaceAll(path.sep, "/"),
+        content: rawSource,
+      }))
+    ) {
+      continue;
+    }
+
     const lines = rawSource.split(/\r?\n/);
     const relocated = relocateCandidateRange(lines, candidate);
     if (!relocated) {
@@ -2509,11 +2530,18 @@ export async function applyShortTermPromotions(
       compactedDates = compaction.droppedDates;
       const baseMemory = compaction.compacted;
       const header = baseMemory.trim().length > 0 ? "" : "# Long-Term Memory\n\n";
-      await fs.writeFile(
-        memoryPath,
-        `${header}${withTrailingNewline(baseMemory)}${section}`,
-        "utf-8",
-      );
+      const workspaceMode = (await fs.stat(workspaceDir)).mode & 0o7777;
+      await replaceFileAtomic({
+        filePath: memoryPath,
+        content: `${header}${withTrailingNewline(baseMemory)}${section}`,
+        dirMode: workspaceMode,
+        mode: 0o600,
+        preserveExistingMode: true,
+        tempPrefix: `${path.basename(memoryPath)}.promotion`,
+        syncTempFile: true,
+        syncParentDir: true,
+        throwOnCleanupError: true,
+      });
     }
 
     for (const candidate of rehydratedSelected) {
